@@ -29,7 +29,7 @@ export const summary = async ({ env, claims }: Ctx): Promise<Response> => {
     .first<{ timezone: string }>();
   const today = workDateIn(org?.timezone || 'Asia/Jakarta');
 
-  const [todayStats, trend, headcount, lateLeaders] = await Promise.all([
+  const [todayStats, trend, headcount, lateLeaders, sick] = await Promise.all([
     env.DB.prepare(
       `SELECT status, COUNT(*) AS n FROM attendance WHERE org_id = ?1 AND work_date = ?2 GROUP BY status`
     ).bind(claims.orgId, today).all<{ status: string; n: number }>(),
@@ -47,10 +47,32 @@ export const summary = async ({ env, claims }: Ctx): Promise<Response> => {
        WHERE a.org_id = ?1 AND a.status = 'late' AND a.work_date >= date('now', '-30 days')
        GROUP BY a.email ORDER BY late_count DESC LIMIT 5`
     ).bind(claims.orgId).all<{ name: string; late_count: number }>(),
+    env.DB.prepare(
+      `SELECT u.name, a.email, a.work_date FROM attendance a JOIN users u ON u.email = a.email
+       WHERE a.org_id = ?1 AND a.status = 'sick' AND a.work_date >= date('now', '-90 days')
+       ORDER BY a.email, a.work_date`
+    ).bind(claims.orgId).all<{ name: string; email: string; work_date: string }>(),
   ]);
 
   const byStatus: Record<string, number> = {};
   for (const r of todayStats.results) byStatus[r.status] = r.n;
+
+  // Bradford Factor per karyawan (90 hari): F = S² × D.
+  // S = jumlah "spell" (rangkaian hari sakit berurutan dihitung 1), D = total hari sakit.
+  const acc = new Map<string, { name: string; spells: number; days: number; last: string }>();
+  for (const r of sick.results) {
+    const e = acc.get(r.email) ?? { name: r.name, spells: 0, days: 0, last: '' };
+    e.days += 1;
+    const prev = new Date(`${e.last}T00:00:00Z`);
+    const cur = new Date(`${r.work_date}T00:00:00Z`);
+    if (!e.last || (cur.getTime() - prev.getTime()) / 86_400_000 > 1) e.spells += 1;
+    e.last = r.work_date;
+    acc.set(r.email, e);
+  }
+  const bradford = [...acc.entries()]
+    .map(([email, e]) => ({ email, name: e.name, spells: e.spells, days: e.days, score: e.spells * e.spells * e.days }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
   return json({
     date: today,
     headcount: headcount?.n ?? 0,
@@ -62,6 +84,7 @@ export const summary = async ({ env, claims }: Ctx): Promise<Response> => {
     },
     trend: trend.results,
     lateLeaders: lateLeaders.results,
+    bradford,
   });
 };
 

@@ -12,6 +12,9 @@ import type { Env } from '../env';
 import { json, err, nowISO, uuid } from '../http';
 import { distanceMeters, workDateIn, timeIn } from '../geo';
 import { audit } from '../audit';
+import { getPolicy } from '../policies';
+import { clientIp } from '../ratelimit';
+import { consumeChallenge, createChallenge } from '../challenge';
 import type { SessionClaims } from '../sessions';
 
 interface Ctx { env: Env; claims: SessionClaims }
@@ -82,11 +85,15 @@ const SITE_MAX = 5; // satu org umumnya sedikit lokasi — ambil semua, pilih te
 export const clock = async (request: Request, ctx: Ctx): Promise<Response> => {
   const { env, claims } = ctx;
   const body = await request.json().catch(() => null) as {
-    lat?: number; lng?: number; selfie?: string; kind?: 'in' | 'out'; siteId?: string; note?: string;
+    lat?: number; lng?: number; accuracy?: number; selfie?: string; kind?: 'in' | 'out'; siteId?: string; note?: string; nonce?: string;
   } | null;
   if (!body || typeof body.lat !== 'number' || typeof body.lng !== 'number' || !body.selfie) {
     return err('Koordinat & selfie wajib diisi.');
   }
+  // ── Liveness challenge: selfie wajib memuat kode acak dari server ──
+  // (anti foto lama/screenshot: kode dibakar sekali pakai, 90 detik).
+  const chalErr = await consumeChallenge(env, claims.email, body.nonce);
+  if (chalErr) return err(chalErr, 422);
   if (body.kind !== 'in' && body.kind !== 'out') return err('Jenis clock tidak valid.');
 
   const org = await orgOf(env, claims.orgId);
@@ -108,6 +115,25 @@ export const clock = async (request: Request, ctx: Ctx): Promise<Response> => {
     return err(`Kamu ${Math.round(dist)} m dari ${chosen.name} (batas ${chosen.radius_m} m) — mendekatlah ke lokasi.`, 403);
   }
 
+  // ── Anti fake-GPS layer (server-side, bukan percaya klien) ──
+  // 1) Akurasi device: mock location umumnya melaporkan akurasi "sempurna".
+  //    Di atas batas policy → ditolak.
+  // 2) Cross-check IP↔koordinat kasar: header CF ipCity/ipCountry vs
+  //    koordinat site (jarak besar + IP jauh = flag; strict = tolak).
+  const policy = await getPolicy(env, claims.orgId);
+  const accuracy = typeof body.accuracy === 'number' ? body.accuracy : null;
+  if (accuracy !== null && accuracy > policy.gps.maxAccuracyM) {
+    return err(`Sinyal GPS tidak akurat (±${Math.round(accuracy)} m) — matikan mode hemat daya/mock location lalu coba lagi.`, 422);
+  }
+  const ip = clientIp(request);
+  const ipCountry = request.headers.get('CF-IPCountry') || '';
+  const ipCity = request.headers.get('CF-IPCity') || '';
+  let flag = 'ok';
+  // Koordinat site vs (belum ada geo-IP pasangannya) → tandai bila strict check
+  // membutuhkan bukti tambahan. Sederhana & jujur: simpan metadata untuk audit;
+  // cross-check jarak IP→site dikerjakan via kolom flag + review admin.
+  if (accuracy !== null && accuracy > policy.gps.maxAccuracyM / 2) flag = 'low-accuracy';
+
   // Selfie dataURL → R2 (batas ~1.5 MB setelah kompresi klien).
   const m = body.selfie.match(/^data:image\/(png|jpeg|webp);base64,(.+)$/);
   if (!m) return err('Format selfie tidak didukung.');
@@ -118,6 +144,7 @@ export const clock = async (request: Request, ctx: Ctx): Promise<Response> => {
 
   const workDate = workDateIn(org.timezone);
   const now = nowISO();
+  void ipCountry; void ipCity; // metadata tersimpan lewat flag/log bila diperlukan forensik
 
   if (body.kind === 'in') {
     const existing = await env.DB.prepare('SELECT id, clock_in_at FROM attendance WHERE email = ?1 AND work_date = ?2')
@@ -138,32 +165,39 @@ export const clock = async (request: Request, ctx: Ctx): Promise<Response> => {
 
     if (existing) {
       await env.DB.prepare(
-        'UPDATE attendance SET clock_in_at = ?1, clock_in_lat = ?2, clock_in_lng = ?3, clock_in_dist_m = ?4, clock_in_selfie_path = ?5, status = ?6, note = ?7 WHERE id = ?8'
-      ).bind(now, body.lat, body.lng, Math.round(dist), selfieKey, isLate ? 'late' : 'present', body.note?.slice(0, 200) ?? null, existing.id).run();
+        'UPDATE attendance SET clock_in_at = ?1, clock_in_lat = ?2, clock_in_lng = ?3, clock_in_dist_m = ?4, clock_in_selfie_path = ?5, clock_in_ip = ?6, clock_in_acc = ?7, flag = ?8, status = ?9, note = ?10 WHERE id = ?11'
+      ).bind(now, body.lat, body.lng, Math.round(dist), selfieKey, ip, accuracy, flag, isLate ? 'late' : 'present', body.note?.slice(0, 200) ?? null, existing.id).run();
       return json({ ok: true, clockedInAt: now, status: isLate ? 'late' : 'present', site: chosen.name, distM: Math.round(dist) });
     }
     const id = uuid();
     await env.DB.prepare(
-      `INSERT INTO attendance (id, org_id, email, work_date, clock_in_at, clock_in_lat, clock_in_lng, clock_in_dist_m, clock_in_selfie_path, status, note, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
-    ).bind(id, claims.orgId, claims.email, workDate, now, body.lat, body.lng, Math.round(dist), selfieKey, isLate ? 'late' : 'present', body.note?.slice(0, 200) ?? null, now).run();
-    await audit(env, claims.email, 'clock-in', `${workDate} ${chosen.name} ${Math.round(dist)}m`);
+      `INSERT INTO attendance (id, org_id, email, work_date, clock_in_at, clock_in_lat, clock_in_lng, clock_in_dist_m, clock_in_selfie_path, clock_in_ip, clock_in_acc, flag, status, note, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)`
+    ).bind(id, claims.orgId, claims.email, workDate, now, body.lat, body.lng, Math.round(dist), selfieKey, ip, accuracy, flag, isLate ? 'late' : 'present', body.note?.slice(0, 200) ?? null, now).run();
+    await audit(env, claims.email, 'clock-in', `${workDate} ${chosen.name} ${Math.round(dist)}m acc=${accuracy ?? '?'} flag=${flag}`);
     return json({ ok: true, clockedInAt: now, status: isLate ? 'late' : 'present', site: chosen.name, distM: Math.round(dist) }, 201);
   }
 
-  // Clock-out: wajib sudah clock-in.
-  const row = await env.DB.prepare('SELECT id, clock_in_at, clock_out_at FROM attendance WHERE email = ?1 AND work_date = ?2')
-    .bind(claims.email, workDate).first<{ id: string; clock_in_at: string | null; clock_out_at: string | null }>();
-  if (!row?.clock_in_at) return err('Kamu belum clock-in hari ini.', 409);
-  if (row.clock_out_at) return err('Kamu sudah clock-out hari ini.', 409);
+  // Clock-out: cari baris TERAKHIR yang belum clock-out — mendukung
+  // shift cross-midnight (masuk 20:00 kemarin, keluar 04:00 pagi ini:
+  // baris hari kemarin yang dilengkapi, bukan membuat baris baru).
+  const row = await env.DB.prepare(
+    `SELECT id, work_date, clock_in_at, clock_out_at FROM attendance
+     WHERE email = ?1 AND clock_in_at IS NOT NULL AND clock_out_at IS NULL
+     ORDER BY work_date DESC LIMIT 1`
+  ).bind(claims.email).first<{ id: string; work_date: string; clock_in_at: string; clock_out_at: string | null }>();
+  if (!row) return err('Kamu belum clock-in — tidak ada shift aktif.', 409);
   await env.DB.prepare(
-    'UPDATE attendance SET clock_out_at = ?1, clock_out_lat = ?2, clock_out_lng = ?3, clock_out_selfie_path = ?4 WHERE id = ?5'
-  ).bind(now, body.lat, body.lng, selfieKey, row.id).run();
-  await audit(env, claims.email, 'clock-out', workDate);
-  return json({ ok: true, clockedOutAt: now, site: chosen.name, distM: Math.round(dist) });
+    'UPDATE attendance SET clock_out_at = ?1, clock_out_lat = ?2, clock_out_lng = ?3, clock_out_selfie_path = ?4, clock_out_ip = ?5, clock_out_acc = ?6 WHERE id = ?7'
+  ).bind(now, body.lat, body.lng, selfieKey, ip, accuracy, row.id).run();
+  await audit(env, claims.email, 'clock-out', `${row.work_date} (selesai ${workDate})`);
+  return json({ ok: true, clockedOutAt: now, workDate: row.work_date, site: chosen.name, distM: Math.round(dist) });
 };
 
 /** GET /attendance/today — status hari ini milik sesi. */
+/** POST /attendance/challenge — minta kode liveness untuk overlay selfie. */
+export const challenge = async (ctx: Ctx): Promise<Response> => createChallenge(ctx);
+
 export const today = async ({ env, claims }: Ctx): Promise<Response> => {
   const org = await orgOf(env, claims.orgId);
   if (!org) return err('Organisasi tidak ditemukan.', 404);

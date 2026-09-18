@@ -16,6 +16,9 @@ import * as emp from './routes/employees';
 import * as bill from './routes/billing';
 import * as ana from './routes/analytics';
 import { googleStart, googleCallback } from './routes/google';
+import { createDelegation, listDelegations, isAdminish } from './authz';
+import { getPolicy, mergePolicy } from './policies';
+import { computeTimesheet, timesheetCsv } from './timesheet';
 
 type Ctx = { env: Env; claims: SessionClaims; request: Request };
 
@@ -72,7 +75,50 @@ const handle = async (request: Request, env: Env): Promise<Response> => {
   }
   if (path === '/attendance/today' && method === 'GET') return att.today(ctx);
   if (path === '/attendance' && method === 'GET') return att.history(request, ctx);
+  if (path === '/attendance/challenge' && method === 'POST') return att.challenge(ctx);
   if (path.startsWith('/attendance/selfie/') && method === 'GET') return att.selfie(path.slice('/attendance/selfie/'.length), ctx);
+
+  // Koreksi admin (append-only audit) & timesheet payroll
+  if (path.startsWith('/attendance/') && path.endsWith('/correct') && method === 'POST') {
+    return emp.correctAttendance(request, path.slice('/attendance/'.length, -'/correct'.length), ctx);
+  }
+  if (path.startsWith('/attendance/') && path.endsWith('/corrections') && method === 'GET') {
+    return emp.listCorrections(path.slice('/attendance/'.length, -'/corrections'.length), ctx);
+  }
+  if (path === '/timesheet/export' && method === 'GET') {
+    if (!isAdminish(claims)) return jsonError('Hanya admin/owner.', 403);
+    const month = url.searchParams.get('month') || new Date().toISOString().slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(month)) return jsonError('Format bulan YYYY-MM.', 400);
+    const pol = await getPolicy(env, claims.orgId);
+    const holCfg = await env.DB.prepare('SELECT value FROM app_config WHERE key = ?1').bind(`holidays:${claims.orgId}`)
+      .first<{ value: string }>().catch(() => null);
+    const holidays = new Set<string>(holCfg?.value ? (JSON.parse(holCfg.value) as string[]) : []);
+    const rows = await env.DB.prepare(
+      `SELECT a.work_date, a.clock_in_at, a.clock_out_at, a.status, a.flag, u.name, u.email,
+              s.start_time AS shift_start, s.end_time AS shift_end, s.grace_minutes
+       FROM attendance a JOIN users u ON u.email = a.email
+       LEFT JOIN employee_shifts es ON es.email = a.email AND es.effective_from = (
+         SELECT MAX(effective_from) FROM employee_shifts WHERE email = a.email)
+       LEFT JOIN shifts s ON s.id = es.shift_id
+       WHERE a.org_id = ?1 AND a.work_date LIKE ?2 || '%'
+       ORDER BY a.work_date, u.name`
+    ).bind(claims.orgId, month).all();
+    const sheet = computeTimesheet(rows.results as never[], pol, holidays);
+    return new Response(timesheetCsv(sheet), {
+      headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="presensia-timesheet-${month}.csv"` },
+    });
+  }
+
+  // Delegasi wewenang & policy
+  if (path === '/delegations' && method === 'GET') return listDelegations(env, claims);
+  if (path === '/delegations' && method === 'POST') return createDelegation(request, env, claims);
+  if (path === '/policy' && method === 'GET') return json({ policy: await getPolicy(env, claims.orgId) });
+  if (path === '/policy' && method === 'PUT') {
+    if (claims.role === 'employee') return jsonError('Hanya admin/owner.', 403);
+    const body = await request.json().catch(() => null) as Record<string, unknown> | null;
+    const next = await mergePolicy(env, claims.orgId, (body || {}) as never);
+    return json({ policy: next });
+  }
 
   // Karyawan & izin
   if (path === '/employees' && method === 'GET') return emp.list(ctx);
