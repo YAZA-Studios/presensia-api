@@ -123,6 +123,7 @@ const handle = async (request: Request, env: Env): Promise<Response> => {
   // Karyawan & izin
   if (path === '/employees' && method === 'GET') return emp.list(ctx);
   if (path === '/employees' && method === 'POST') return emp.create(request, ctx);
+  if (path === '/employees/shift' && method === 'POST') return emp.assignShift(request, ctx);
   if (path.startsWith('/employees/') && method === 'DELETE') return emp.remove(path.slice('/employees/'.length), ctx);
   if (path === '/leaves' && method === 'GET') return emp.listLeaves(ctx);
   if (path === '/leaves' && method === 'POST') return emp.requestLeave(request, ctx);

@@ -58,7 +58,31 @@ export const create = async (request: Request, { env, claims }: Ctx): Promise<Re
   ).bind(email, claims.orgId, body.name.slice(0, 80), role,
     await hashPassword(body.password), body.phone?.slice(0, 24) ?? null, reportsTo, nowISO()).run();
   await audit(env, claims.email, 'create-employee', email);
-  return json({ employee: { email, name: body.name, role: body.role === 'admin' ? 'admin' : 'employee' } }, 201);
+  return json({ employee: { email, name: body.name, role } }, 201);
+};
+
+/** POST /employees/shift — assign shift ke karyawan (berlaku hari ini).
+ *  Body: { email, shiftId }. Owner/admin saja. */
+export const assignShift = async (request: Request, { env, claims }: Ctx): Promise<Response> => {
+  const guard = requireAdmin(claims);
+  if (guard) return guard;
+  const body = await request.json().catch(() => null) as { email?: string; shiftId?: string } | null;
+  const email = body?.email?.trim().toLowerCase() || '';
+  if (!email || !body?.shiftId) return err('Email & shiftId wajib diisi.');
+  const user = await env.DB.prepare('SELECT email FROM users WHERE email = ?1 AND org_id = ?2')
+    .bind(email, claims.orgId).first();
+  if (!user) return err('Karyawan tidak ditemukan.', 404);
+  const shift = await env.DB.prepare('SELECT id FROM shifts WHERE id = ?1 AND org_id = ?2')
+    .bind(body.shiftId, claims.orgId).first();
+  if (!shift) return err('Shift tidak ditemukan.', 404);
+  // Upsert penugasan efektif hari ini (PK: email + effective_from).
+  const today = new Date().toISOString().slice(0, 10);
+  await env.DB.prepare(
+    `INSERT INTO employee_shifts (email, shift_id, effective_from) VALUES (?1, ?2, ?3)
+     ON CONFLICT(email, effective_from) DO UPDATE SET shift_id = ?2`
+  ).bind(email, body.shiftId, today).run();
+  await audit(env, claims.email, 'assign-shift', `${email} → ${body.shiftId}`);
+  return json({ ok: true }, 201);
 };
 
 /** DELETE /employees/:email — hapus karyawan (bukan owner). */
@@ -89,7 +113,7 @@ export const requestLeave = async (request: Request, { env, claims }: Ctx): Prom
   }
   const id = uuid();
   await env.DB.prepare(
-    'INSERT INTO leave_requests (id, org_id, email, type, date_from, date_to, reason, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?, ?8)'
+    'INSERT INTO leave_requests (id, org_id, email, type, date_from, date_to, reason, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)'
   ).bind(id, claims.orgId, claims.email, type, body.dateFrom, body.dateTo, body.reason?.slice(0, 300) ?? null, 'pending', nowISO()).run();
   await audit(env, claims.email, 'request-leave', `${type} ${body.dateFrom}..${body.dateTo}`);
   return json({ leave: { id, type, dateFrom: body.dateFrom, dateTo: body.dateTo, status: 'pending' } }, 201);

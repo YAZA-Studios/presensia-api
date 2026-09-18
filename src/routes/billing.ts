@@ -55,7 +55,7 @@ export const createInvoice = async (request: Request, { env, claims }: Ctx): Pro
 
   const id = `INV-${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
   await env.DB.prepare(
-    'INSERT INTO invoices (id, org_id, plan, employee_quota, months, amount, status, method, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?, ?7, ?8)'
+    'INSERT INTO invoices (id, org_id, plan, employee_quota, months, amount, status, method, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)'
   ).bind(id, claims.orgId, plan.id, plan.employeeQuota, plan.months, plan.price, 'unpaid', method, nowISO()).run();
   await audit(env, claims.email, 'create-invoice', `${id} ${plan.id} ${plan.price}`);
 
@@ -86,7 +86,7 @@ export const uploadProof = async (request: Request, invoiceId: string, { env, cl
   await env.R2.put(key, bytes, { httpMetadata: { contentType: m[1] } });
 
   await env.DB.batch([
-    env.DB.prepare('INSERT INTO payment_proofs (id, invoice_id, org_id, proof_path, note, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?, ?6)')
+    env.DB.prepare('INSERT INTO payment_proofs (id, invoice_id, org_id, proof_path, note, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)')
       .bind(uuid(), invoiceId, claims.orgId, key, body?.note?.slice(0, 200) ?? null, 'pending', nowISO()),
     env.DB.prepare("UPDATE invoices SET method = 'transfer' WHERE id = ?1"),
   ].map((s, i) => (i === 1 ? s.bind(invoiceId) : s)));
