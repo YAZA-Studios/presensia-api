@@ -1,0 +1,42 @@
+{
+  "name": "hadirku-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-09-23",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "hadirku-db",
+      "database_id": "GANTI-DENGAN-ID-D1-ANDA",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "kv_namespaces": [
+    { "binding": "KV", "id": "GANTI-DENGAN-ID-KV-ANDA" }
+  ],
+
+  "r2_buckets": [
+    { "binding": "R2", "bucket_name": "hadirku-media" }
+  ],
+
+  "triggers": {
+    "crons": ["17 * * * *"]
+  },
+
+  "vars": {
+    "APP_NAME": "Hadirku",
+    "PUBLIC_API_URL": "https://api.hadirku.id",
+    "PUBLIC_APP_URL": "https://app.hadirku.id"
+  }
+
+  /* Secrets (jangan di-commit):
+   *   npx wrangler secret put DOKU_SECRET_KEY
+   *   (opsional) SESSION_SIGNING_SECRET — otomatis di-provision ke KV
+   *
+   * Kredensial DOKU (clientId/env) diatur admin dari panel, tersimpan
+   * di tabel app_config — sama seperti pola veomoment.
+   */
+}
