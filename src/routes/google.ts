@@ -100,9 +100,9 @@ const provisionGoogleUser = async (env: Env, claims: GoogleClaims): Promise<{ em
   const trialEnd = new Date(Date.now() + 14 * 86_400_000).toISOString();
   const avatarPath = claims.picture ? `avatars/${orgId}/owner.jpg` : null;
   await env.DB.batch([
-    env.DB.prepare('INSERT INTO orgs (id, name, slug, plan, plan_expires_at, created_at) VALUES (?1, ?2, ?3, ?, ?4, ?5)')
+    env.DB.prepare('INSERT INTO orgs (id, name, slug, plan, plan_expires_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)')
       .bind(orgId, orgName, slug, 'trial', trialEnd, nowISO()),
-    env.DB.prepare('INSERT INTO users (email, org_id, name, role, password_hash, avatar_path, created_at) VALUES (?1, ?2, ?3, ?, ?4, ?5, ?6)')
+    env.DB.prepare('INSERT INTO users (email, org_id, name, role, password_hash, avatar_path, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)')
       .bind(claims.email, orgId, claims.name || claims.email, 'owner', `google:${claims.sub}`, avatarPath, nowISO()),
   ]);
   // Simpan avatar URL (bukan file) ke app_config agar ringan.
