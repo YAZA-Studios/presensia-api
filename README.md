@@ -1,6 +1,6 @@
-# Hadirku API
+# Presensia API
 
-Backend SaaS absensi karyawan **Hadirku** — 100% Cloudflare, tanpa server tradisional.
+Backend SaaS absensi karyawan **Presensia** — 100% Cloudflare, tanpa server tradisional.
 
 ## Stack Teknologi
 
@@ -55,13 +55,13 @@ POST /admin/doku                   — set kredensial gateway (owner)
 
 ```bash
 npm install
-npx wrangler d1 create hadirku-db         # isi database_id di wrangler.jsonc
+npx wrangler d1 create presensia-db         # isi database_id di wrangler.jsonc
 npx wrangler kv namespace create KV       # isi id KV
-npx wrangler r2 bucket create hadirku-media
-npx wrangler d1 execute hadirku-db --remote --file=./migrations/0001_init.sql
+npx wrangler r2 bucket create presensia-media
+npx wrangler d1 execute presensia-db --remote --file=./migrations/0001_init.sql
 npx wrangler secret put DOKU_SECRET_KEY
 npm run dev      # lokal
 npm run deploy   # produksi
 ```
 
-Repo FE: `hadirku-fe` (React + Vite + TypeScript, deploy Cloudflare Pages/Assets).
+Repo FE: `presensia-fe` (React + Vite + TypeScript, deploy Cloudflare Pages/Assets).

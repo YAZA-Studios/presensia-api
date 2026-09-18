@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// Hadirku — util HTTP & CORS.
+// Presensia — util HTTP & CORS.
 // ─────────────────────────────────────────────────────────────
 export const corsHeaders = {
   'Access-Control-Allow-Origin': '*',

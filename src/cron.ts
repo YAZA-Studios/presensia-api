@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// Hadirku — Cron Worker (per jam):
+// Presensia — Cron Worker (per jam):
 //  1. Tandai ABSENT karyawan yang tidak clock-in sampai akhir hari+grace
 //     (karena zona waktu beragam, jalankan tiap jam & filter per org).
 //  2. Nonaktifkan org trial/paket kedaluwarsa (plan tetap, gate di runtime).

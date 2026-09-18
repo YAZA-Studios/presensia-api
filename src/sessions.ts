@@ -1,11 +1,11 @@
 // ─────────────────────────────────────────────────────────────
-// Hadirku — sesi stateless cookie bertanda tangan HMAC-SHA256.
+// Presensia — sesi stateless cookie bertanda tangan HMAC-SHA256.
 // Payload base64url: e=email, o=orgId, r=role, exp=epoch detik.
 // Zero KV read per request; secret di KV (provision otomatis).
 // ─────────────────────────────────────────────────────────────
 import type { Env } from './env';
 
-const COOKIE_NAME = 'hadirku_session';
+const COOKIE_NAME = 'presensia_session';
 const TTL_S = 60 * 60 * 24 * 7; // 7 hari
 const enc = new TextEncoder();
 

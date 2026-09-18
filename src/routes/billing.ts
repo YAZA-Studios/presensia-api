@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// Hadirku — tagihan & langganan (DOKU Checkout + transfer manual).
+// Presensia — tagihan & langganan (DOKU Checkout + transfer manual).
 // Pola teruji veomoment: invoice → bayar (gateway/manual) → aktif.
 // ─────────────────────────────────────────────────────────────
 import type { Env } from '../env';
@@ -61,7 +61,7 @@ export const createInvoice = async (request: Request, { env, claims }: Ctx): Pro
 
   if (method === 'doku') {
     const user = await env.DB.prepare('SELECT name FROM users WHERE email = ?1').bind(claims.email).first<{ name: string }>();
-    const checkout = await createDokuCheckout(env, { id, amount: plan.price }, { customerEmail: claims.email, customerName: user?.name || 'Pelanggan Hadirku' });
+    const checkout = await createDokuCheckout(env, { id, amount: plan.price }, { customerEmail: claims.email, customerName: user?.name || 'Pelanggan Presensia' });
     if (!checkout.ok) return json({ invoice: { id, amount: plan.price, status: 'unpaid' }, dokuError: checkout.message }, 502);
     return json({ invoice: { id, amount: plan.price, status: 'unpaid' }, paymentUrl: checkout.url }, 201);
   }

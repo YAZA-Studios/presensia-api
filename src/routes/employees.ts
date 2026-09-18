@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// Hadirku — manajemen karyawan & pengajuan izin/cuti.
+// Presensia — manajemen karyawan & pengajuan izin/cuti.
 // ─────────────────────────────────────────────────────────────
 import type { Env } from '../env';
 import { json, err, nowISO, uuid } from '../http';

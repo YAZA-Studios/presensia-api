@@ -1,4 +1,4 @@
--- Hadirku — skema awal (D1 / SQLite)
+-- Presensia — skema awal (D1 / SQLite)
 
 -- ── Org & pengguna ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS orgs (

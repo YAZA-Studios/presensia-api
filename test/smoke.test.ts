@@ -1,4 +1,4 @@
-// Smoke test inti Hadirku API — jalan di workers pool (vitest-pool-workers).
+// Smoke test inti Presensia API — jalan di workers pool (vitest-pool-workers).
 import { describe, it, expect } from 'vitest';
 import worker from '../src/index';
 
@@ -23,7 +23,7 @@ const env = {
     delete: async () => {},
   } as unknown as KVNamespace,
   R2: { put: async () => ({}), get: async () => null } as unknown as R2Bucket,
-  APP_NAME: 'Hadirku',
+  APP_NAME: 'Presensia',
   PUBLIC_API_URL: 'https://api.test',
   PUBLIC_APP_URL: 'https://app.test',
 } as any;
@@ -31,13 +31,13 @@ const env = {
 const req = (path: string, init: RequestInit = {}): Request =>
   new Request(`https://api.test${path}`, init);
 
-describe('Hadirku API — smoke', () => {
+describe('Presensia API — smoke', () => {
   it('health ok', async () => {
     const res = await app.fetch(req('/health'), env, {} as any);
     expect(res.status).toBe(200);
     const body = await res.json() as { ok: boolean; service: string };
     expect(body.ok).toBe(true);
-    expect(body.service).toBe('hadirku-api');
+    expect(body.service).toBe('presensia-api');
   });
 
   it('route privat tanpa sesi → 401', async () => {

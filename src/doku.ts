@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// Hadirku — integrasi DOKU Checkout (pola teruji veomoment).
+// Presensia — integrasi DOKU Checkout (pola teruji veomoment).
 //
 // Signature (spec resmi DOKU):
 //   Digest    = base64(SHA256(raw JSON body))

@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// Hadirku — password hashing WebCrypto PBKDF2-SHA256.
+// Presensia — password hashing WebCrypto PBKDF2-SHA256.
 // Format self-describing: pbkdf2$<iter>$<saltB64>$<hashB64>
 // ─────────────────────────────────────────────────────────────
 export const PBKDF2_ITERATIONS = 300_000;

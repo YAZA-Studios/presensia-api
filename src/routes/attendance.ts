@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// Hadirku — absensi: lokasi (sites), shift, clock-in/out ber-GPS+
+// Presensia — absensi: lokasi (sites), shift, clock-in/out ber-GPS+
 // selfie (R2), riwayat, dan rekap bulanan.
 //
 // Gate anti-bocor:

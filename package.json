@@ -1,5 +1,5 @@
 {
-  "name": "hadirku-api",
+  "name": "presensia-api",
   "version": "1.0.0",
   "private": true,
   "scripts": {
@@ -7,7 +7,7 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "db:local": "wrangler d1 execute hadirku-db --local --file=./migrations/0001_init.sql"
+    "db:local": "wrangler d1 execute presensia-db --local --file=./migrations/0001_init.sql"
   },
   "dependencies": {
     "hono": "^4.6.0"

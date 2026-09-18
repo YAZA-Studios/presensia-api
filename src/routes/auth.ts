@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// Hadirku — autentikasi: daftar org baru, login, profil, logout.
+// Presensia — autentikasi: daftar org baru, login, profil, logout.
 // ─────────────────────────────────────────────────────────────
 import type { Env } from '../env';
 import { json, err, nowISO, corsHeaders } from '../http';

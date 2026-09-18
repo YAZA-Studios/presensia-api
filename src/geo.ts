@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// Hadirku — util geolokasi (haversine) & tanggal zona waktu org.
+// Presensia — util geolokasi (haversine) & tanggal zona waktu org.
 // ─────────────────────────────────────────────────────────────
 
 /** Jarak meter antara dua koordinat (rumus haversine). */

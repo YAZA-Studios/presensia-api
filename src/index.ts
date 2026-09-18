@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// Hadirku API — Cloudflare Workers entrypoint.
+// Presensia API — Cloudflare Workers entrypoint.
 //
 // Stack: Workers + Hono-less manual router (zero-dependency core),
 // D1 (SQL), R2 (selfie & bukti bayar), KV (cache/secret/sesi-link),
@@ -14,6 +14,8 @@ import * as auth from './routes/auth';
 import * as att from './routes/attendance';
 import * as emp from './routes/employees';
 import * as bill from './routes/billing';
+import * as ana from './routes/analytics';
+import { googleStart, googleCallback } from './routes/google';
 
 type Ctx = { env: Env; claims: SessionClaims; request: Request };
 
@@ -27,7 +29,7 @@ const handle = async (request: Request, env: Env): Promise<Response> => {
   if (method === 'OPTIONS') return auth.preflight();
 
   // ── Health (publik, untuk uptime monitor) ──
-  if (path === '/health') return json({ ok: true, service: 'hadirku-api', time: new Date().toISOString() });
+  if (path === '/health') return json({ ok: true, service: 'presensia-api', time: new Date().toISOString() });
 
   // ── Webhook DOKU (publik, signature-diverifikasi) ──
   if (path === '/payments/doku/notify' && method === 'POST') return bill.dokuNotify(request, env);
@@ -35,6 +37,10 @@ const handle = async (request: Request, env: Env): Promise<Response> => {
   // ── Auth publik ──
   if (path === '/register' && method === 'POST') return auth.handleRegister(request, env);
   if (path === '/login' && method === 'POST') return auth.handleLogin(request, env);
+
+  // ── Login Google (OAuth 2.0 + OIDC) ──
+  if (path === '/auth/google' && method === 'GET') return googleStart(request, env);
+  if (path === '/auth/google/callback' && method === 'GET') return googleCallback(request, env);
 
   // ── Landing publik: katalog paket ──
   const claims = await sessionFromRequest(env, request);
@@ -46,6 +52,11 @@ const handle = async (request: Request, env: Env): Promise<Response> => {
 
   if (path === '/me' && method === 'GET') return auth.handleMe(env, claims);
   if (path === '/logout' && method === 'POST') return auth.handleLogout();
+
+  // Analitik & ekspor (fitur enterprise)
+  if (path === '/analytics/summary' && method === 'GET') return ana.summary(ctx);
+  if (path === '/analytics/live' && method === 'GET') return ana.live(ctx);
+  if (path === '/analytics/export' && method === 'GET') return ana.exportCsv(request, ctx);
 
   // Absensi
   if (path === '/sites' && method === 'GET') return att.listSites(ctx);
@@ -91,7 +102,7 @@ const handle = async (request: Request, env: Env): Promise<Response> => {
 export default {
   fetch: (request: Request, env: Env): Promise<Response> =>
     handle(request, env).catch((e) => {
-      console.error('[hadirku]', e);
+      console.error('[presensia]', e);
       return jsonError('Kesalahan server.', 500);
     }),
 

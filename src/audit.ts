@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// Hadirku — audit log (D1). Fire-and-forget, tidak pernah menggagalkan request.
+// Presensia — audit log (D1). Fire-and-forget, tidak pernah menggagalkan request.
 // ─────────────────────────────────────────────────────────────
 import type { Env } from './env';
 

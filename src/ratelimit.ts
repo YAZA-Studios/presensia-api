@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// Hadirku — rate limit per-kunci via D1 (jendela 1 menit).
+// Presensia — rate limit per-kunci via D1 (jendela 1 menit).
 // Disiplin di endpoint sensitif: login, register, clock, bukti bayar.
 // ─────────────────────────────────────────────────────────────
 import type { Env } from './env';

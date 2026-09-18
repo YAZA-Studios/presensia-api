@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// Hadirku API — tipe lingkungan Cloudflare Workers.
+// Presensia API — tipe lingkungan Cloudflare Workers.
 // ─────────────────────────────────────────────────────────────
 export interface Env {
   DB: D1Database;
@@ -12,6 +12,9 @@ export interface Env {
 
   /** Secret DOKU (override); clientId & mode dari app_config. */
   DOKU_SECRET_KEY?: string;
+  /** Login Google (OAuth 2.0 + OIDC). */
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
   /** Opsional: override secret tanda tangan sesi (rotasi darurat). */
   SESSION_SIGNING_SECRET?: string;
 }
