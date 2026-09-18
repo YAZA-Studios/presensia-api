@@ -6,6 +6,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
+    "audit:sql": "node scripts/audit-sql-binding.mjs",
     "test": "vitest run",
     "db:local": "wrangler d1 execute presensia-db --local --file=./migrations/0001_init.sql"
   },

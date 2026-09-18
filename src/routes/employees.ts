@@ -28,6 +28,8 @@ export const list = async ({ env, claims }: Ctx): Promise<Response> => {
           .all<{ email: string; name: string; role: string; phone: string | null; created_at: string; reports_to: string | null; total_hadir: number }>()
       : await env.DB.prepare(`${base} AND u.email = ?2 ORDER BY u.created_at`).bind(claims.orgId, claims.email)
           .all<{ email: string; name: string; role: string; phone: string | null; created_at: string; reports_to: string | null; total_hadir: number }>();
+  // Catatan: cabang admin hanya memakai ?1 (tanpa ?2) — sah di SQLite;
+  // ?2 eksis hanya di cabang manager/employee.
   return json({ employees: rows.results.map((r) => ({ email: r.email, name: r.name, role: r.role, phone: r.phone, createdAt: r.created_at, reportsTo: r.reports_to, totalHadir: r.total_hadir })) });
 };
 

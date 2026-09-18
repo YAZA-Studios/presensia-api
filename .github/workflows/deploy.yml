@@ -1,14 +1,17 @@
-name: CI
+name: Deploy API (Cloudflare Workers)
 
+# Deploy otomatis ke produksi setiap push ke main — hanya setelah CI lolos.
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: deploy-api
+  cancel-in-progress: false
+
 jobs:
-  ci:
+  deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,3 +31,8 @@ jobs:
 
       - name: Tests
         run: npm test
+
+      - name: Deploy to Cloudflare Workers
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
