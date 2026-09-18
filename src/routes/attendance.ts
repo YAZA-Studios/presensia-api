@@ -218,13 +218,14 @@ export const history = async (request: Request, { env, claims }: Ctx): Promise<R
 
   const rows = emailFilter
     ? await env.DB.prepare(
-        `SELECT a.work_date, a.clock_in_at, a.clock_out_at, a.status, a.note, u.name FROM attendance a JOIN users u ON u.email = a.email
+        `SELECT a.id, a.work_date, a.clock_in_at, a.clock_out_at, a.status, a.note, a.flag, u.name FROM attendance a JOIN users u ON u.email = a.email
          WHERE a.email = ?3 AND a.work_date LIKE ?2 || '%' ORDER BY a.work_date DESC`
       ).bind(0, month, emailFilter).all()
     : await env.DB.prepare(
-        `SELECT a.work_date, a.clock_in_at, a.clock_out_at, a.status, a.note, u.name FROM attendance a JOIN users u ON u.email = a.email
+        `SELECT a.id, a.work_date, a.clock_in_at, a.clock_out_at, a.status, a.note, a.flag, u.name FROM attendance a JOIN users u ON u.email = a.email
          WHERE a.org_id = ?1 AND a.work_date LIKE ?2 || '%' ORDER BY a.work_date DESC, u.name`
       ).bind(claims.orgId, month).all();
+  // Location/Liveness Verified: ada selfie tersimpan (R2) = kedua verifikasi tercapai.
   return json({ month, rows: rows.results });
 };
 
