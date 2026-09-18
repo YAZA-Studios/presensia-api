@@ -12,7 +12,7 @@
 //   npx wrangler secret put GOOGLE_CLIENT_ID
 //   npx wrangler secret put GOOGLE_CLIENT_SECRET
 // Redirect URI yang didaftarkan di Google Cloud Console:
-//   https://api.presensia.id/auth/google/callback
+//   https://presensia-api.yazaprojectstudios.workers.dev/auth/google/callback
 // ─────────────────────────────────────────────────────────────
 import type { Env } from '../env';
 import { json, nowISO } from '../http';
