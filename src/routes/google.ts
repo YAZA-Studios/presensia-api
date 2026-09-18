@@ -150,10 +150,13 @@ export const googleCallback = async (request: Request, env: Env): Promise<Respon
   const user = await provisionGoogleUser(env, claims);
   await audit(env, user.email, user.isNew ? 'register-google' : 'login-google', `sub=${claims.sub}`);
   const token = await issueSession(env, { email: user.email, orgId: user.orgId, role: user.role });
+  // Redirect selalu ke aplikasi FE (PUBLIC_APP_URL), bukan origin API —
+  // callback memang diterima di domain API, tapi pengguna harus berakhir di app.
+  const appUrl = env.PUBLIC_APP_URL || stateOrigin;
   return new Response(null, {
     status: 302,
     headers: {
-      Location: `${stateOrigin}/#/app`,
+      Location: `${appUrl}/#/app`,
       'Set-Cookie': sessionCookie(token),
     },
   });
