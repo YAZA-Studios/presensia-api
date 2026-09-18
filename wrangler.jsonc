@@ -9,13 +9,13 @@
     {
       "binding": "DB",
       "database_name": "presensia-db",
-      "database_id": "GANTI-DENGAN-ID-D1-ANDA",
+      "database_id": "0875c8a4-a1eb-41c6-9234-5de97e7d9749",
       "migrations_dir": "migrations"
     }
   ],
 
   "kv_namespaces": [
-    { "binding": "KV", "id": "GANTI-DENGAN-ID-KV-ANDA" }
+    { "binding": "KV", "id": "358ccc8ae9474349a5b9504e2a66a147" }
   ],
 
   "r2_buckets": [

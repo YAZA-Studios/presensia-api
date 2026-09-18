@@ -221,8 +221,8 @@ export const correctAttendance = async (request: Request, attId: string, { env, 
   }
   if (!changes.length) return err('Tidak ada perubahan nilai.');
 
-  const sets = changes.map(([f]) => `${f} = ?`).join(', ');
-  await env.DB.prepare(`UPDATE attendance SET ${sets} WHERE id = ?`)
+  const sets = changes.map(([f], i) => `${f} = ?${i + 1}`).join(', ');
+  await env.DB.prepare(`UPDATE attendance SET ${sets} WHERE id = ?${changes.length + 1}`)
     .bind(...changes.map(([, , nv]) => nv), attId).run();
   for (const [field, oldV, newV] of changes) {
     await env.DB.prepare(

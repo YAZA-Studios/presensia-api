@@ -41,9 +41,9 @@ export const handleRegister = async (request: Request, env: Env): Promise<Respon
 
   const trialEnd = new Date(Date.now() + 14 * 86_400_000).toISOString();
   await env.DB.batch([
-    env.DB.prepare('INSERT INTO orgs (id, name, slug, plan, plan_expires_at, created_at) VALUES (?1, ?2, ?3, ?, ?4, ?5)')
+    env.DB.prepare('INSERT INTO orgs (id, name, slug, plan, plan_expires_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)')
       .bind(orgId, orgName, slug, 'trial', trialEnd, nowISO()),
-    env.DB.prepare('INSERT INTO users (email, org_id, name, role, password_hash, created_at) VALUES (?1, ?2, ?3, ?, ?4, ?5)')
+    env.DB.prepare('INSERT INTO users (email, org_id, name, role, password_hash, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)')
       .bind(email, orgId, name, 'owner', await hashPassword(password), nowISO()),
   ]);
 

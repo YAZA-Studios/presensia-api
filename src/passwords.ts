@@ -2,7 +2,10 @@
 // Presensia — password hashing WebCrypto PBKDF2-SHA256.
 // Format self-describing: pbkdf2$<iter>$<saltB64>$<hashB64>
 // ─────────────────────────────────────────────────────────────
-export const PBKDF2_ITERATIONS = 300_000;
+// Batas platform: WebCrypto di Cloudflare Workers menolak PBKDF2 > 100.000
+// iterasi (free & paid). Format `pbkdf2$<iter>$...` self-describing — jika
+// kelak batas platform naik, cukup ubah konstanta ini; hash lama tetap valid.
+export const PBKDF2_ITERATIONS = 100_000;
 
 const enc = new TextEncoder();
 const toB64 = (buf: ArrayBuffer | Uint8Array): string => {
