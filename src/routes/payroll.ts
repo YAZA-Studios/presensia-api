@@ -10,6 +10,7 @@ import { isAdminish } from '../authz';
 import { getPolicy, getBpjsConfig } from '../policies';
 import { computeTimesheet } from '../timesheet';
 import { computePayroll, summarizeEmployee, computeYearEndPph21, computeBpjs, type BpjsConfig, type YearEndResult } from '../domain/payroll/engine';
+import { generateAnnualPdf } from '../payrollPdf';
 import type { SessionClaims } from '../sessions';
 
 interface Ctx { env: Env; claims: SessionClaims }
@@ -494,6 +495,90 @@ const BULAN = ['jan', 'feb', 'mar', 'apr', 'mei', 'jun', 'jul', 'agu', 'sep', 'o
  *  (dasar bukti potong 1721-A1): satu baris per karyawan berisi bruto,
  *  pengurang iuran, PPh 21 per bulan Jan–Des + total setahun.
  *  PPh 21 Desember sudah mencakup penyesuaian Pasal 17 bila dijalankan. */
+// ── Rekap tahunan PPh 21 (PDF 1721-A1) ──────────────────────
+/** GET /payroll/recap/annual/pdf?year=YYYY — PDF bukti potong 1721-A1
+ *  per karyawan dari payslips setahun. Worker-generated dengan pdf-lib.
+ *  Konten sama dengan CSV rekap tahunan (nama, NPWP, bruto, pengurang,
+ *  PPh 21 per bulan Jan–Des, total). */
+export const exportRecapAnnualPdf = async (request: Request, { env, claims }: Ctx): Promise<Response> => {
+  if (!isAdminish(claims)) return err('Hanya admin/owner.', 403);
+  const year = Number(new URL(request.url).searchParams.get('year') || new Date().getFullYear());
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) return err('Tahun tidak valid.');
+
+  const rows = await env.DB.prepare(
+    `SELECT p.email, p.month, p.gross_monthly, p.pph21, p.detail, u.name, u.npwp, u.ptkp
+     FROM payslips p JOIN users u ON u.email = p.email
+     WHERE p.org_id = ?1 AND p.month LIKE ?2 || '-%'
+     ORDER BY u.name, p.month`
+  ).bind(claims.orgId, String(year)).all<{
+    email: string; month: string; gross_monthly: number; pph21: number; detail: string | null;
+    name: string; npwp: string | null; ptkp: string | null;
+  }>();
+
+  interface Agg {
+    name: string; npwp: string; email: string; ptkp: string;
+    months: number; bruto: number; pengurang: number;
+    monthly: number[]; total: number;
+  }
+  const byEmail = new Map<string, Agg>();
+  for (const r of rows.results) {
+    const m = Number(r.month.slice(5, 7));
+    if (!(m >= 1 && m <= 12)) continue;
+    const d = parseJson(r.detail);
+    const dpp = (d.pph21 as { gross?: number } | undefined)?.gross;
+    const pengurang = typeof dpp === 'number' ? Math.max(0, r.gross_monthly - dpp) : 0;
+    const a = byEmail.get(r.email) ?? {
+      name: r.name, npwp: r.npwp || '', email: r.email, ptkp: r.ptkp || 'TK/0',
+      months: 0, bruto: 0, pengurang: 0, monthly: Array(12).fill(0) as number[], total: 0,
+    };
+    a.months += 1;
+    a.bruto += r.gross_monthly;
+    a.pengurang += pengurang;
+    a.monthly[m - 1] += r.pph21;
+    a.total += r.pph21;
+    byEmail.set(r.email, a);
+  }
+  const aggs = [...byEmail.values()].sort((x, y) => x.name.localeCompare(y.name));
+
+  const pdfBytes = await generateAnnualPdf(claims.orgId, year, aggs, new Date().toISOString());
+  return new Response(pdfBytes, {
+    headers: {
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="bukti-potong-1721-A1-${year}.pdf"`,
+    },
+  });
+};
+
+/** GET /payroll/recap/bpjs-check?month=YYYY-MM — validasi snapshot iuran slip
+ *  vs config BPJS org yang aktif (versi JSON untuk preview UI, logika sama
+ *  dengan kolom sesuai_config/catatan_selisih di CSV). Hanya baris bermasalah
+ *  yang dikembalikan (BEDA / TANPA SNAPSHOT). */
+export const bpjsCheck = async (request: Request, { env, claims }: Ctx): Promise<Response> => {
+  if (!isAdminish(claims)) return err('Hanya admin/owner.', 403);
+  const month = new URL(request.url).searchParams.get('month') || new Date().toISOString().slice(0, 7);
+  if (!MONTH_RE.test(month)) return err('Format bulan YYYY-MM.');
+
+  const rows = await env.DB.prepare(
+    `SELECT p.base_salary, p.detail, u.name, u.email
+     FROM payslips p JOIN users u ON u.email = p.email
+     WHERE p.org_id = ?1 AND p.month = ?2 ORDER BY u.name`
+  ).bind(claims.orgId, month).all<{
+    base_salary: number; detail: string | null; name: string; email: string;
+  }>();
+  if (rows.results.length === 0) return json({ month, checked: 0, bedaCount: 0, tanpaSnapshot: 0, rows: [] });
+
+  const cfg = await getBpjsConfig(env, claims.orgId);
+  let bedaCount = 0, tanpaSnapshot = 0;
+  const problems: { email: string; name: string; status: string; catatan: string }[] = [];
+  for (const r of rows.results) {
+    const cmp = bandingkanBpjs(r.base_salary, bpjsOf(parseJson(r.detail)), cfg);
+    if (cmp.status === 'COCOK') continue;
+    if (cmp.status === 'BEDA') bedaCount += 1; else tanpaSnapshot += 1;
+    problems.push({ email: r.email, name: r.name, status: cmp.status, catatan: cmp.catatan });
+  }
+  return json({ month, checked: rows.results.length, bedaCount, tanpaSnapshot, rows: problems });
+};
+
 export const exportRecapAnnual = async (request: Request, { env, claims }: Ctx): Promise<Response> => {
   if (!isAdminish(claims)) return err('Hanya admin/owner.', 403);
   const year = Number(new URL(request.url).searchParams.get('year') || new Date().getFullYear());

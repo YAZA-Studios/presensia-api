@@ -267,6 +267,8 @@ const handle = async (request: Request, env: Env): Promise<Response> => {
   if (path === '/payroll/payslips/export' && method === 'GET') return pay.exportPayslips(request, ctx);
   if (path === '/payroll/recap/export' && method === 'GET') return pay.exportRecap(request, ctx);
   if (path === '/payroll/recap/annual' && method === 'GET') return pay.exportRecapAnnual(request, ctx);
+  if (path === '/payroll/recap/annual/pdf' && method === 'GET') return pay.exportRecapAnnualPdf(request, ctx);
+  if (path === '/payroll/recap/bpjs-check' && method === 'GET') return pay.bpjsCheck(request, ctx);
 
   // ── THR tahunan: prorata masa kerja (BR-13) — terpisah dari payroll ──
   if (path === '/thr-config' && method === 'GET') {
