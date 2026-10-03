@@ -35,15 +35,20 @@ export const getPlans = async (env: Env): Promise<Plan[]> => {
 /** GET /plans — katalog publik untuk landing. */
 export const publicPlans = async ({ env }: Ctx): Promise<Response> => json({ plans: await getPlans(env) });
 
-/** GET /billing — invoice org milik sesi (termasuk info VA). */
+/** GET /billing — invoice org milik sesi. Invoice unpaid yang VA-nya
+ *  kedaluwarsa otomatis ditandai 'expired' (lazy, tanpa nunggu cron). */
 export const myInvoices = async ({ env, claims }: Ctx): Promise<Response> => {
+  await env.DB.prepare(
+    `UPDATE invoices SET status = 'expired' WHERE org_id = ?1 AND status = 'unpaid'
+     AND expires_at IS NOT NULL AND julianday(expires_at) <= julianday('now')`
+  ).bind(claims.orgId).run();
   const rows = await env.DB.prepare(
-    'SELECT id, plan, employee_quota, months, amount, status, method, created_at, paid_at, va_number, bank_label, how_to_pay_url FROM invoices WHERE org_id = ?1 ORDER BY created_at DESC LIMIT 100'
+    'SELECT id, plan, employee_quota, months, amount, status, method, created_at, paid_at, va_number, bank_label, how_to_pay_url, expires_at FROM invoices WHERE org_id = ?1 ORDER BY created_at DESC LIMIT 100'
   ).bind(claims.orgId).all<Record<string, unknown>>();
   return json({ invoices: rows.results.map((r) => ({
     id: r.id, plan: r.plan, employeeQuota: r.employee_quota, months: r.months, amount: r.amount,
     status: r.status, method: r.method, createdAt: r.created_at, paidAt: r.paid_at,
-    vaNumber: r.va_number, bankLabel: r.bank_label, howToPayUrl: r.how_to_pay_url,
+    vaNumber: r.va_number, bankLabel: r.bank_label, howToPayUrl: r.how_to_pay_url, expiresAt: r.expires_at,
   })) });
 };
 
@@ -51,8 +56,9 @@ export const myInvoices = async ({ env, claims }: Ctx): Promise<Response> => {
  *  lewat gateway terpusat yaza-payments (idempoten: klik ganda → VA sama). */
 export const createInvoice = async (request: Request, { env, claims }: Ctx): Promise<Response> => {
   if (claims.role === 'employee') return err('Hanya admin/owner.', 403);
-  const body = await request.json().catch(() => null) as { planId?: string; method?: string } | null;
+  const body = await request.json().catch(() => null) as { planId?: string; method?: string; bankId?: string } | null;
   const planId = body?.planId || '';
+  const bankId = (body?.bankId || '').trim().toLowerCase();
   const plans = await getPlans(env);
   const plan = plans.find((p) => p.id === planId);
   if (!plan) return err('Paket tidak ditemukan.', 404);
@@ -65,17 +71,19 @@ export const createInvoice = async (request: Request, { env, claims }: Ctx): Pro
 
   const user = await env.DB.prepare('SELECT name FROM users WHERE email = ?1').bind(claims.email).first<{ name: string }>();
   // VA berlaku 3 hari (sama dengan kebijakan checkout lama).
+  const expiresAt = new Date(Date.now() + 3 * 86_400_000).toISOString();
   const pay = await yazaCreateVirtualAccount(env, {
     externalId: id,
     amount: plan.price,
-    expiresAt: new Date(Date.now() + 3 * 86_400_000).toISOString(),
+    expiresAt,
+    bankId: bankId || undefined,
     customer: { name: user?.name || 'Pelanggan Presensia', email: claims.email },
   });
   if (!pay.ok) return json({ invoice: { id, amount: plan.price, status: 'unpaid' }, dokuError: pay.message }, pay.status === 503 ? 503 : 502);
 
   await env.DB.prepare(
-    'UPDATE invoices SET payment_ref = ?1, va_number = ?2, bank_label = ?3, how_to_pay_url = ?4 WHERE id = ?5'
-  ).bind(pay.payment.transactionId, pay.payment.virtualAccountNo, pay.payment.bankLabel, pay.payment.howToPayPage || null, id).run();
+    'UPDATE invoices SET payment_ref = ?1, va_number = ?2, bank_label = ?3, how_to_pay_url = ?4, expires_at = ?5 WHERE id = ?6'
+  ).bind(pay.payment.transactionId, pay.payment.virtualAccountNo, pay.payment.bankLabel, pay.payment.howToPayPage || null, expiresAt, id).run();
 
   return json({
     invoice: { id, amount: plan.price, status: 'unpaid' },
@@ -152,11 +160,23 @@ export const dokuNotify = async (request: Request, env: Env): Promise<Response> 
 
 /** GET /billing/invoices/:id — polling status (milik org sendiri, termasuk VA). */
 export const invoiceStatus = async (invoiceId: string, { env, claims }: Ctx): Promise<Response> => {
+  await env.DB.prepare(
+    `UPDATE invoices SET status = 'expired' WHERE id = ?1 AND status = 'unpaid'
+     AND expires_at IS NOT NULL AND julianday(expires_at) <= julianday('now')`
+  ).bind(invoiceId).run();
   const inv = await env.DB.prepare(
-    'SELECT id, plan, amount, status, method, paid_at, va_number, bank_label, how_to_pay_url FROM invoices WHERE id = ?1 AND org_id = ?2'
+    'SELECT id, plan, amount, status, method, paid_at, va_number, bank_label, how_to_pay_url, expires_at FROM invoices WHERE id = ?1 AND org_id = ?2'
   ).bind(invoiceId, claims.orgId).first<Record<string, unknown>>();
   if (!inv) return err('Invoice tidak ditemukan.', 404);
-  return json({ invoice: { id: inv.id, plan: inv.plan, amount: inv.amount, status: inv.status, method: inv.method, paidAt: inv.paid_at, vaNumber: inv.va_number, bankLabel: inv.bank_label, howToPayUrl: inv.how_to_pay_url } });
+  return json({ invoice: { id: inv.id, plan: inv.plan, amount: inv.amount, status: inv.status, method: inv.method, paidAt: inv.paid_at, vaNumber: inv.va_number, bankLabel: inv.bank_label, howToPayUrl: inv.how_to_pay_url, expiresAt: inv.expires_at } });
+};
+
+/** GET /payroll/payment-methods — kanal bank VA aktif di gateway
+ *  (untuk pilihan bank saat bayar). */
+export const paymentMethods = async ({ env, claims }: Ctx): Promise<Response> => {
+  if (claims.role === 'employee') return err('Hanya admin/owner.', 403);
+  const channels = await yazaPaymentMethods(env);
+  return json({ channels });
 };
 
 /** POST /payments/yaza/callback — callback server-to-server dari yaza-payments

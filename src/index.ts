@@ -310,6 +310,7 @@ const handle = async (request: Request, env: Env): Promise<Response> => {
 
   // Tagihan
   if (path === '/billing' && method === 'GET') return bill.myInvoices(ctx);
+  if (path === '/payroll/payment-methods' && method === 'GET') return bill.paymentMethods(ctx);
   if (path === '/billing/invoices' && method === 'POST') {
     if (!(await rateLimit(env, `inv:${claims.orgId}`, 10))) return jsonError('Terlalu sering — tunggu sebentar.', 429);
     return bill.createInvoice(request, ctx);

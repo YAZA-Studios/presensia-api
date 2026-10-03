@@ -56,4 +56,14 @@ export const runScheduled = async (env: Env): Promise<void> => {
       headers: { Authorization: `Bearer ${env.YAZA_PAYMENTS_API_KEY}` },
     }).catch(() => {});
   }
+
+  // 6) Invoice unpaid yang VA-nya kedaluwarsa → status 'expired'
+  //    (sinkron dengan penandaan expired di gateway).
+  const expired = await env.DB.prepare(
+    `UPDATE invoices SET status = 'expired' WHERE status = 'unpaid'
+     AND expires_at IS NOT NULL AND julianday(expires_at) <= julianday('now')`
+  ).run().catch(() => null);
+  if (expired && (expired.meta.changes ?? 0) > 0) {
+    console.log(JSON.stringify({ event: 'invoices_expired', count: expired.meta.changes }));
+  }
 };

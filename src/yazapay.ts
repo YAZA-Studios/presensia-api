@@ -74,10 +74,11 @@ export type YazaCreateOk = { ok: true; payment: YazaPayment; reused: boolean };
 export type YazaCreateFail = { ok: false; message: string; status: number };
 
 /** POST /v1/virtual-accounts — buat (atau reuse) VA untuk satu invoice.
- *  Bank dipilih dari env.YAZA_DEFAULT_BANK, atau channel aktif pertama. */
+ *  Bank: input.bankId (pilihan user) → env.YAZA_DEFAULT_BANK → channel aktif
+ *  pertama. Kanal tidak dikenal ditolak gateway (422). */
 export const yazaCreateVirtualAccount = async (
   env: Env,
-  input: { externalId: string; amount: number; expiresAt: string; customer: { name: string; email: string } },
+  input: { externalId: string; amount: number; expiresAt: string; bankId?: string; customer: { name: string; email: string } },
 ): Promise<YazaCreateOk | YazaCreateFail> => {
   if (!yazaConfigured(env)) {
     return { ok: false, message: 'Gateway yaza-payments belum dikonfigurasi — hubungi admin.', status: 503 };
@@ -86,7 +87,8 @@ export const yazaCreateVirtualAccount = async (
   if (channels.length === 0) {
     return { ok: false, message: 'Belum ada metode pembayaran aktif — hubungi admin.', status: 503 };
   }
-  const bankId = (env.YAZA_DEFAULT_BANK || '').trim() || channels[0]!.id;
+  const chosen = (input.bankId || '').trim().toLowerCase();
+  const bankId = chosen || (env.YAZA_DEFAULT_BANK || '').trim() || channels[0]!.id;
 
   let res: Response;
   try {
