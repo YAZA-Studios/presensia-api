@@ -9,7 +9,8 @@
 // Buat ulang desain PDF jika regulasi formulir 1721-A1 berubah.
 // ─────────────────────────────────────────────────────────────
 import { PDFDocument, rgb } from 'pdf-lib';
-import type { PDFPage } from 'pdf-lib';
+import type { PDFPage, PDFFont } from 'pdf-lib';
+import qrcode from 'qrcode-generator';
 
 const COLORS = {
   navy: rgb(0.075, 0.235, 0.353),   // #123C5A
@@ -454,6 +455,135 @@ export const generateAnnualPdf = async (
   
   const pdfBytes = await doc.save();
   return pdfBytes;
+};
+
+/** Gambar matriks QR sebagai kotak hitam (murni vektor PDF, tanpa gambar).
+ *  @param x kiri-atas X · @param y kiri-atas Y (koordinat PDF dari bawah). */
+const drawQr = (page: PDFPage, x: number, y: number, size: number, text: string): void => {
+  const qr = qrcode(0, 'M');
+  qr.addData(text);
+  qr.make();
+  const n = qr.getModuleCount();
+  const cell = size / n;
+  page.drawRectangle({ x, y, width: size, height: size, color: COLORS.white });
+  for (let r = 0; r < n; r++) {
+    for (let c = 0; c < n; c++) {
+      if (!qr.isDark(r, c)) continue;
+      page.drawRectangle({
+        x: x + c * cell,
+        y: y + size - (r + 1) * cell,
+        width: cell + 0.15,
+        height: cell + 0.15,
+        color: COLORS.navy,
+      });
+    }
+  }
+};
+
+const MONTH_NAMES = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+
+/** PDF bukti potong 1721-A1 untuk SATU karyawan — layout formal satu halaman:
+ *  identitas, rincian PPh 21 per bulan, total, blok tanda tangan elektronik
+ *  dengan QR verifikasi + kode segel HMAC (dapat diverifikasi publik). */
+export const generateEmployeePdf = async (
+  orgName: string,
+  year: number,
+  data: RowData,
+  opts: { verifyUrl: string; sealCode: string; issuedAt: string },
+): Promise<Uint8Array> => {
+  const doc = await createDoc();
+  const page = await newPage(doc);
+  const { width } = page.getSize();
+  const ts = new Date(opts.issuedAt);
+  const issuedLabel = `${ts.getDate()} ${MONTH_NAMES[ts.getMonth()]} ${ts.getFullYear()} ${String(ts.getHours()).padStart(2, '0')}:${String(ts.getMinutes()).padStart(2, '0')} WIB`;
+
+  let y = await drawHeader(doc, page, orgName, year);
+  const font = await embedFont(doc, FONT_HELVETICA);
+  const fontBold = await embedFont(doc, FONT_HELVETICA_BOLD);
+  const fontMono = await embedFont(doc, FONT_COURIER);
+
+  // ── Identitas pemotong & pekerja ──
+  page.drawRectangle({ x: PADDING - 2, y: y - 92, width: width - 2 * PADDING + 4, height: 92, color: rgb(0.965, 0.976, 0.984) });
+  const idRows: [string, string][] = [
+    ['Nama pekerja', data.name],
+    ['NPWP', data.npwp || '—'],
+    ['Email', data.email],
+    ['Status PTKP', data.ptkp],
+    ['Jumlah bulan berslip', `${data.months} bulan`],
+  ];
+  let iy = y - 18;
+  for (const [label, value] of idRows) {
+    page.drawText(label, { x: PADDING + 4, y: iy, size: 8.5, font, color: COLORS.grey });
+    page.drawText(value, { x: PADDING + 120, y: iy, size: 9.5, font: label === 'Nama pekerja' ? fontBold : font, color: COLORS.navy });
+    iy -= 16;
+  }
+  y -= 104;
+
+  // ── Kolom kiri: rincian PPh 21 per bulan ──
+  const tableW = 300;
+  page.drawText('RINCIAN PPh 21 DIPOTONG', { x: PADDING, y, size: 8.5, font: fontBold, color: COLORS.navy });
+  y -= 14;
+  const rowH = 19;
+  page.drawRectangle({ x: PADDING, y: y - rowH * 14, width: tableW, height: rowH * 14, color: COLORS.white });
+  page.drawRectangle({ x: PADDING, y: y - rowH, width: tableW, height: rowH, color: COLORS.navy });
+  page.drawText('Bulan', { x: PADDING + 8, y: y - rowH + 6, size: 7.5, font: fontBold, color: COLORS.white });
+  page.drawText('PPh 21 (Rp)', { x: PADDING + tableW - 78, y: y - rowH + 6, size: 7.5, font: fontBold, color: COLORS.white });
+  let ty = y - rowH;
+  const rightText = (text: string, tx: number, yPos: number, f: PDFFont, size: number, color = COLORS.navy): void => {
+    const w = f.widthOfTextAtSize(text, size);
+    page.drawText(text, { x: tx - w, y: yPos, size, font: f, color });
+  };
+  for (let m = 0; m < 12; m++) {
+    ty -= rowH;
+    if (m % 2 === 1) page.drawRectangle({ x: PADDING, y: ty, width: tableW, height: rowH, color: rgb(0.969, 0.976, 0.984) });
+    page.drawText(MONTH_NAMES[m]!, { x: PADDING + 8, y: ty + 6, size: 8, font, color: COLORS.navy });
+    const val = data.monthly[m]! > 0 ? new Intl.NumberFormat('id-ID').format(data.monthly[m]!) : '—';
+    rightText(val, PADDING + tableW - 8, ty + 6, fontMono, 8);
+  }
+  // Baris TOTAL (latar krem)
+  ty -= rowH;
+  page.drawRectangle({ x: PADDING, y: ty, width: tableW, height: rowH, color: COLORS.cream });
+  page.drawText('TOTAL', { x: PADDING + 8, y: ty + 6, size: 8.5, font: fontBold, color: COLORS.navy });
+  rightText(new Intl.NumberFormat('id-ID').format(data.total), PADDING + tableW - 8, ty + 6, fontBold, 8.5);
+  // garis penutup tabel
+  page.drawRectangle({ x: PADDING, y: ty, width: tableW, height: 1, color: COLORS.teal });
+
+  // ── Kolom kanan: QR + segel + tanda tangan elektronik ──
+  const rx = PADDING + tableW + 26;
+  const qrSize = 104;
+  drawQr(page, rx, y - qrSize + 14, qrSize, opts.verifyUrl);
+  let ry = y - qrSize + 14 - 14;
+  page.drawText('Pindai QR untuk verifikasi keabsahan', { x: rx, y: ry, size: 7, font, color: COLORS.grey });
+  ry -= 11;
+  page.drawText('Kode verifikasi:', { x: rx, y: ry, size: 7.5, font, color: COLORS.grey });
+  ry -= 12;
+  page.drawText(opts.sealCode, { x: rx, y: ry, size: 9.5, font: fontMono, color: COLORS.teal });
+  ry -= 22;
+  page.drawText(`Diterbitkan elektronik: ${issuedLabel}`, { x: rx, y: ry, size: 7, font, color: COLORS.grey });
+  ry -= 34;
+  // Blok tanda tangan
+  page.drawText(`${orgName}`, { x: rx, y: ry, size: 9, font: fontBold, color: COLORS.navy });
+  ry -= 11;
+  page.drawText('Tanda tangan elektronik tersegel', { x: rx, y: ry, size: 7.5, font, color: COLORS.grey });
+  ry -= 11;
+  page.drawText('(dokumen + QR + kode HMAC unik)', { x: rx, y: ry, size: 7.5, font, color: COLORS.grey });
+  ry -= 26;
+  page.drawLine({ start: { x: rx, y: ry }, end: { x: rx + 130, y: ry }, thickness: 0.8, color: COLORS.teal });
+  ry -= 10;
+  page.drawText('Presensia — HR & Payroll', { x: rx, y: ry, size: 7, font, color: COLORS.grey });
+
+  // Catatan kaki kiri (di bawah tabel bulanan)
+  const noteY = Math.min(ty, 64) - 6;
+  page.drawText('Keterangan:', { x: PADDING, y: noteY, size: 6.5, font: fontBold, color: COLORS.navy });
+  page.drawText('1. PPh 21 dipotong pemberi kerja sesuai tarif TER (PP 58/2023) dan/atau Pasal 17 UU PPh (Desember).', {
+    x: PADDING, y: noteY - 9, size: 6.5, font, color: COLORS.grey,
+  });
+  page.drawText('2. Pengurang = iuran JHT + JP karyawan. Keabsahan dokumen dapat diperiksa lewat QR / kode verifikasi.', {
+    x: PADDING, y: noteY - 18, size: 6.5, font, color: COLORS.grey,
+  });
+
+  await drawFooter(doc, page, 1, 1, issuedLabel);
+  return doc.save();
 };
 
 

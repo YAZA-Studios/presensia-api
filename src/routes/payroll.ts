@@ -10,7 +10,7 @@ import { isAdminish } from '../authz';
 import { getPolicy, getBpjsConfig } from '../policies';
 import { computeTimesheet } from '../timesheet';
 import { computePayroll, summarizeEmployee, computeYearEndPph21, computeBpjs, type BpjsConfig, type YearEndResult } from '../domain/payroll/engine';
-import { generateAnnualPdf } from '../payrollPdf';
+import { generateAnnualPdf, generateEmployeePdf } from '../payrollPdf';
 import type { SessionClaims } from '../sessions';
 
 interface Ctx { env: Env; claims: SessionClaims }
@@ -495,6 +495,113 @@ const BULAN = ['jan', 'feb', 'mar', 'apr', 'mei', 'jun', 'jul', 'agu', 'sep', 'o
  *  (dasar bukti potong 1721-A1): satu baris per karyawan berisi bruto,
  *  pengurang iuran, PPh 21 per bulan Jan–Des + total setahun.
  *  PPh 21 Desember sudah mencakup penyesuaian Pasal 17 bila dijalankan. */
+// ── Segel verifikasi bukti potong 1721-A1 (HMAC per dokumen) ──
+/** Kode segel = hex(HMAC-SHA-256(secret, "1721a1|org|email|tahun|total")) 20 digit,
+ *  dicetak di PDF dan di-encode ke QR. Secret memakai YAZA_WEBHOOK_SIGNING_SECRET
+ *  atau SESSION_SIGNING_SECRET (fallback bawaan) — tanpa secret baru. */
+const seal1721Code = async (env: Env, orgId: string, email: string, year: number, total: number): Promise<string> => {
+  const secret = (env.YAZA_WEBHOOK_SIGNING_SECRET || env.SESSION_SIGNING_SECRET || 'presensia-1721-seal').trim();
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`1721a1|${orgId}|${email.toLowerCase()}|${year}|${Math.round(total)}`));
+  const hex = [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  return hex.slice(0, 20).replace(/(.{4})(?=.)/g, '$1-');
+};
+const sealDigits = (code: string): string => code.replace(/[^0-9a-f]/gi, '').toLowerCase();
+
+interface AnnualAggRow {
+  name: string; npwp: string; email: string; ptkp: string;
+  months: number; bruto: number; pengurang: number;
+  monthly: number[]; total: number;
+}
+
+/** Agregasi payslips setahun per karyawan (dipakai CSV, PDF, daftar, verify). */
+const computeAnnualAggs = async (env: Env, orgId: string, year: number): Promise<AnnualAggRow[]> => {
+  const rows = await env.DB.prepare(
+    `SELECT p.email, p.month, p.gross_monthly, p.pph21, p.detail, u.name, u.npwp, u.ptkp
+     FROM payslips p JOIN users u ON u.email = p.email
+     WHERE p.org_id = ?1 AND p.month LIKE ?2 || '-%'
+     ORDER BY u.name, p.month`
+  ).bind(orgId, String(year)).all<{
+    email: string; month: string; gross_monthly: number; pph21: number; detail: string | null;
+    name: string; npwp: string | null; ptkp: string | null;
+  }>();
+  const byEmail = new Map<string, AnnualAggRow>();
+  for (const r of rows.results) {
+    const m = Number(r.month.slice(5, 7));
+    if (!(m >= 1 && m <= 12)) continue;
+    const d = parseJson(r.detail);
+    const dpp = (d.pph21 as { gross?: number } | undefined)?.gross;
+    const pengurang = typeof dpp === 'number' ? Math.max(0, r.gross_monthly - dpp) : 0;
+    const a = byEmail.get(r.email) ?? {
+      name: r.name, npwp: r.npwp || '', email: r.email, ptkp: r.ptkp || 'TK/0',
+      months: 0, bruto: 0, pengurang: 0, monthly: Array(12).fill(0) as number[], total: 0,
+    };
+    a.months += 1;
+    a.bruto += r.gross_monthly;
+    a.pengurang += pengurang;
+    a.monthly[m - 1] += r.pph21;
+    a.total += r.pph21;
+    byEmail.set(r.email, a);
+  }
+  return [...byEmail.values()].sort((x, y) => x.name.localeCompare(y.name));
+};
+
+/** GET /payroll/recap/annual/employees?year=YYYY — daftar karyawan berslip
+ *  setahun (untuk unduhan PDF bukti potong per orang). */
+export const annualEmployees = async (request: Request, { env, claims }: Ctx): Promise<Response> => {
+  if (!isAdminish(claims)) return err('Hanya admin/owner.', 403);
+  const year = Number(new URL(request.url).searchParams.get('year') || new Date().getFullYear());
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) return err('Tahun tidak valid.');
+  const aggs = await computeAnnualAggs(env, claims.orgId, year);
+  return json({ year, employees: aggs.map(({ email, name, months, bruto, total }) => ({ email, name, months, bruto, total })) });
+};
+
+/** Halaman verifikasi publik (dibuka dari QR di PDF) — HTML ringkas. */
+const verifyPage = (ok: boolean, title: string, rows: [string, string][]): Response => new Response(
+  `<!doctype html><html lang="id"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Bukti Potong 1721-A1 — ${title}</title><style>
+ body{font-family:system-ui,-apple-system,sans-serif;background:#F5F8FA;margin:0;padding:32px 16px;color:#152238}
+ .card{max-width:460px;margin:0 auto;background:#fff;border-radius:16px;padding:28px;box-shadow:0 10px 30px rgba(18,60,90,.10)}
+ h1{font-size:20px;margin:0 0 4px}.badge{display:inline-block;padding:4px 12px;border-radius:99px;font-size:12px;font-weight:800;margin-bottom:14px}
+ .ok{background:#E5F7EC;color:#18803F}.fail{background:#FEECEC;color:#B3222A}
+ table{width:100%;border-collapse:collapse;font-size:14px}td{padding:7px 0;border-bottom:1px solid #E3E9F0;vertical-align:top}
+ td:first-child{color:#5B6B80;width:44%}td:last-child{text-align:right;font-weight:600;font-variant-numeric:tabular-nums}
+ .brand{color:#0E7C6C;font-weight:800;font-size:12px;letter-spacing:.08em;text-transform:uppercase;margin-top:18px}
+</style></head><body><div class="card"><h1>${title}</h1>
+<span class="badge ${ok ? 'ok' : 'fail'}">${ok ? '✔ Dokumen Sah' : '✖ Gagal Verifikasi'}</span>
+<table>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>
+<div class="brand">Presensia · Verifikasi Bukti Potong</div></div></body></html>`,
+  { headers: { 'Content-Type': 'text/html; charset=utf-8' }, status: ok ? 200 : 400 });
+
+/** GET /payroll/recap/annual/verify?email=&year=&code= — PUBLIK (dari QR).
+ *  Hitung ulang segel dari data server dan cocokkan dengan kode di dokumen. */
+export const verifyAnnual1721 = async (request: Request, env: Env): Promise<Response> => {
+  const url = new URL(request.url);
+  const email = (url.searchParams.get('email') || '').trim().toLowerCase();
+  const year = Number(url.searchParams.get('year') || 0);
+  const code = url.searchParams.get('code') || '';
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || !(year >= 2000 && year <= 2100) || !/^[0-9a-f-]{20,24}$/i.test(code)) {
+    return verifyPage(false, 'Tidak Terverifikasi', [['Penyebab', 'Parameter tidak valid.']]);
+  }
+  const user = await env.DB.prepare('SELECT org_id FROM users WHERE email = ?1').bind(email)
+    .first<{ org_id: string }>();
+  if (!user) return verifyPage(false, 'Tidak Terverifikasi', [['Penyebab', 'Email tidak terdaftar.']]);
+  const aggs = await computeAnnualAggs(env, user.org_id, year);
+  const agg = aggs.find((a) => a.email === email);
+  if (!agg) return verifyPage(false, 'Tidak Terverifikasi', [['Penyebab', 'Tidak ada bukti potong tahun ini untuk email tersebut.']]);
+  const expected = await seal1721Code(env, user.org_id, email, year, agg.total);
+  if (sealDigits(expected) !== sealDigits(code)) {
+    return verifyPage(false, 'Tidak Terverifikasi', [['Penyebab', 'Kode tidak cocok — dokumen mungkin telah dimodifikasi.']]);
+  }
+  const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  return verifyPage(true, 'Bukti Potong Terverifikasi', [
+    ['Nama', esc(agg.name)], ['NPWP', esc(agg.npwp || '—')], ['Email', esc(agg.email)],
+    ['Status PTKP', esc(agg.ptkp)], ['Tahun Pajak', String(year)], ['Jumlah Bulan', String(agg.months)],
+    ['Bruto Setahun', `Rp ${agg.bruto.toLocaleString('id-ID')}`],
+    ['Total PPh 21 Dipotong', `Rp ${agg.total.toLocaleString('id-ID')}`],
+  ]);
+};
+
 // ── Rekap tahunan PPh 21 (PDF 1721-A1) ──────────────────────
 /** GET /payroll/recap/annual/pdf?year=YYYY — PDF bukti potong 1721-A1
  *  per karyawan dari payslips setahun. Worker-generated dengan pdf-lib.
@@ -540,7 +647,26 @@ export const exportRecapAnnualPdf = async (request: Request, { env, claims }: Ct
   }
   const aggs = [...byEmail.values()].sort((x, y) => x.name.localeCompare(y.name));
 
-  const pdfBytes = await generateAnnualPdf(claims.orgId, year, aggs, new Date().toISOString());
+  // ?email= → satu PDF formal per karyawan (QR + segel digital), siap dikirim.
+  const reqUrl = new URL(request.url);
+  const emailParam = (reqUrl.searchParams.get('email') || '').trim().toLowerCase();
+  const issuedAt = new Date().toISOString();
+  if (emailParam) {
+    const agg = aggs.find((a) => a.email === emailParam);
+    if (!agg) return err('Tidak ada payslip tahun itu untuk email ini.', 404);
+    const seal = await seal1721Code(env, claims.orgId, agg.email, year, agg.total);
+    const base = (env.PUBLIC_API_URL || reqUrl.origin).replace(/\/+$/, '');
+    const verifyUrl = `${base}/payroll/recap/annual/verify?email=${encodeURIComponent(agg.email)}&year=${year}&code=${seal}`;
+    const pdfBytes = await generateEmployeePdf(claims.orgId, year, agg, { verifyUrl, sealCode: seal, issuedAt });
+    return new Response(pdfBytes, {
+      headers: {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename="bukti-potong-1721-A1-${year}-${agg.email}.pdf"`,
+      },
+    });
+  }
+
+  const pdfBytes = await generateAnnualPdf(claims.orgId, year, aggs, issuedAt);
   return new Response(pdfBytes, {
     headers: {
       'Content-Type': 'application/pdf',
