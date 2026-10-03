@@ -102,7 +102,7 @@ const provisionGoogleUser = async (env: Env, claims: GoogleClaims): Promise<{ em
   await env.DB.batch([
     env.DB.prepare('INSERT INTO orgs (id, name, slug, plan, plan_expires_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)')
       .bind(orgId, orgName, slug, 'trial', trialEnd, nowISO()),
-    env.DB.prepare('INSERT INTO users (email, org_id, name, role, password_hash, avatar_path, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)')
+    env.DB.prepare('INSERT INTO users (email, org_id, name, role, password_hash, email_verified, avatar_path, created_at) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)')
       .bind(claims.email, orgId, claims.name || claims.email, 'owner', `google:${claims.sub}`, avatarPath, nowISO()),
   ]);
   // Simpan avatar URL (bukan file) ke app_config agar ringan.
@@ -150,13 +150,17 @@ export const googleCallback = async (request: Request, env: Env): Promise<Respon
   const user = await provisionGoogleUser(env, claims);
   await audit(env, user.email, user.isNew ? 'register-google' : 'login-google', `sub=${claims.sub}`);
   const token = await issueSession(env, { email: user.email, orgId: user.orgId, role: user.role });
-  // Redirect selalu ke aplikasi FE (PUBLIC_APP_URL), bukan origin API —
-  // callback memang diterima di domain API, tapi pengguna harus berakhir di app.
-  const appUrl = env.PUBLIC_APP_URL || stateOrigin;
+  // Serahkan sesi ke FE lewat kode sekali-pakai (KV TTL 2 menit, hapus-saat-baca):
+  // FE menukarnya via POST /auth/exchange → token Bearer disimpan di localStorage.
+  // Ini melewati keterbatasan cookie lintas-situs (SameSite & third-party blocking).
+  // Cookie tetap di-set untuk skenario same-site (custom domain nanti).
+  const appUrl = (env.PUBLIC_APP_URL || stateOrigin).replace(/\/+$/, '');
+  const authCode = crypto.randomUUID();
+  await env.KV.put(`authcode:${authCode}`, token, { expirationTtl: 120 });
   return new Response(null, {
     status: 302,
     headers: {
-      Location: `${appUrl}/#/app`,
+      Location: `${appUrl}/#/auth/callback?code=${authCode}`,
       'Set-Cookie': sessionCookie(token),
     },
   });

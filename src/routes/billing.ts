@@ -1,10 +1,11 @@
 // ─────────────────────────────────────────────────────────────
-// Presensia — tagihan & langganan (DOKU Checkout + transfer manual).
-// Pola teruji veomoment: invoice → bayar (gateway/manual) → aktif.
+// Presensia — tagihan & langganan (DOKU Checkout).
+// Pola: invoice → checkout DOKU → notify (signature) → aktif.
+// Kredensial DOKU diatur operator via `wrangler secret put` — bukan dari UI.
 // ─────────────────────────────────────────────────────────────
 import type { Env } from '../env';
-import { json, err, nowISO, uuid, corsHeaders } from '../http';
-import { createDokuCheckout, getDokuCreds, dokuNotifySignatureValid } from '../doku';
+import { json, err, nowISO } from '../http';
+import { createDokuCheckout, getDokuCreds, dokuNotifySignatureValid, type DokuEnv } from '../doku';
 import { audit } from '../audit';
 import type { SessionClaims } from '../sessions';
 
@@ -43,55 +44,25 @@ export const myInvoices = async ({ env, claims }: Ctx): Promise<Response> => {
   })) });
 };
 
-/** POST /billing/invoices — buat invoice paket + (opsional) langsung checkout DOKU. */
+/** POST /billing/invoices — buat invoice paket + langsung checkout DOKU. */
 export const createInvoice = async (request: Request, { env, claims }: Ctx): Promise<Response> => {
   if (claims.role === 'employee') return err('Hanya admin/owner.', 403);
-  const body = await request.json().catch(() => null) as { planId?: string; method?: 'transfer' | 'doku' } | null;
+  const body = await request.json().catch(() => null) as { planId?: string; method?: string } | null;
   const planId = body?.planId || '';
   const plans = await getPlans(env);
   const plan = plans.find((p) => p.id === planId);
   if (!plan) return err('Paket tidak ditemukan.', 404);
-  const method = body?.method === 'doku' ? 'doku' : 'transfer';
 
   const id = `INV-${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
   await env.DB.prepare(
     'INSERT INTO invoices (id, org_id, plan, employee_quota, months, amount, status, method, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)'
-  ).bind(id, claims.orgId, plan.id, plan.employeeQuota, plan.months, plan.price, 'unpaid', method, nowISO()).run();
+  ).bind(id, claims.orgId, plan.id, plan.employeeQuota, plan.months, plan.price, 'unpaid', 'doku', nowISO()).run();
   await audit(env, claims.email, 'create-invoice', `${id} ${plan.id} ${plan.price}`);
 
-  if (method === 'doku') {
-    const user = await env.DB.prepare('SELECT name FROM users WHERE email = ?1').bind(claims.email).first<{ name: string }>();
-    const checkout = await createDokuCheckout(env, { id, amount: plan.price }, { customerEmail: claims.email, customerName: user?.name || 'Pelanggan Presensia' });
-    if (!checkout.ok) return json({ invoice: { id, amount: plan.price, status: 'unpaid' }, dokuError: checkout.message }, 502);
-    return json({ invoice: { id, amount: plan.price, status: 'unpaid' }, paymentUrl: checkout.url }, 201);
-  }
-  return json({ invoice: { id, amount: plan.price, status: 'unpaid' } }, 201);
-};
-
-/** POST /billing/invoices/:id/proof — unggah bukti transfer (base64 image/pdf). */
-export const uploadProof = async (request: Request, invoiceId: string, { env, claims }: Ctx): Promise<Response> => {
-  const body = await request.json().catch(() => null) as { dataUrl?: string; note?: string } | null;
-  const m = body?.dataUrl?.match(/^data:(image\/(png|jpeg|webp)|application\/pdf);base64,(.+)$/);
-  if (!m) return err('Bukti harus gambar/PDF.');
-  const bytes = Uint8Array.from(atob(m[3]), (c) => c.charCodeAt(0));
-  if (bytes.length > 5_000_000) return err('Bukti terlalu besar (maks 5 MB).');
-
-  const invoice = await env.DB.prepare('SELECT id, org_id, status FROM invoices WHERE id = ?1 AND org_id = ?2')
-    .bind(invoiceId, claims.orgId).first<{ id: string; org_id: string; status: string }>();
-  if (!invoice) return err('Invoice tidak ditemukan.', 404);
-  if (invoice.status !== 'unpaid') return err('Invoice tidak sedang menunggu pembayaran.', 409);
-
-  const ext = m[1] === 'application/pdf' ? 'pdf' : m[1] === 'image/png' ? 'png' : m[1] === 'image/webp' ? 'webp' : 'jpg';
-  const key = `proofs/${claims.orgId}/${uuid()}.${ext}`;
-  await env.R2.put(key, bytes, { httpMetadata: { contentType: m[1] } });
-
-  await env.DB.batch([
-    env.DB.prepare('INSERT INTO payment_proofs (id, invoice_id, org_id, proof_path, note, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)')
-      .bind(uuid(), invoiceId, claims.orgId, key, body?.note?.slice(0, 200) ?? null, 'pending', nowISO()),
-    env.DB.prepare("UPDATE invoices SET method = 'transfer' WHERE id = ?1"),
-  ].map((s, i) => (i === 1 ? s.bind(invoiceId) : s)));
-  await audit(env, claims.email, 'upload-proof', invoiceId);
-  return json({ ok: true }, 201);
+  const user = await env.DB.prepare('SELECT name FROM users WHERE email = ?1').bind(claims.email).first<{ name: string }>();
+  const checkout = await createDokuCheckout(env, { id, amount: plan.price }, { customerEmail: claims.email, customerName: user?.name || 'Pelanggan Presensia' });
+  if (!checkout.ok) return json({ invoice: { id, amount: plan.price, status: 'unpaid' }, dokuError: checkout.message }, 502);
+  return json({ invoice: { id, amount: plan.price, status: 'unpaid' }, paymentUrl: checkout.url }, 201);
 };
 
 /** Aktivasi invoice lunas — idempoten: perpanjang plan_expires_at org. */
@@ -147,12 +118,12 @@ export const dokuNotify = async (request: Request, env: Env): Promise<Response> 
       await audit(env, 'doku-gateway', 'doku-paid', `${invoiceNumber} org=${invoice.org_id} ${amount}`);
     }
     await env.KV.delete(`dokuurl:${invoiceNumber}`);
-    return json({ ok: true }, 200, corsHeaders);
+    return json({ ok: true }, 200);
   }
   if (status === 'EXPIRED' || status === 'FAILED') {
     await audit(env, 'doku-gateway', `doku-${status.toLowerCase()}`, invoiceNumber);
   }
-  return json({ ok: true, ignored: status || 'unknown' }, 200, corsHeaders);
+  return json({ ok: true, ignored: status || 'unknown' }, 200);
 };
 
 /** GET /billing/invoices/:id — polling status (milik org sendiri). */
@@ -163,15 +134,18 @@ export const invoiceStatus = async (invoiceId: string, { env, claims }: Ctx): Pr
   return json({ invoice: { id: inv.id, plan: inv.plan, amount: inv.amount, status: inv.status, method: inv.method, paidAt: inv.paid_at } });
 };
 
-/** Admin: set kredensial DOKU clientId/env (secret tetap Worker secret). */
-export const adminSetDoku = async (request: Request, { env, claims }: Ctx): Promise<Response> => {
+/**
+ * GET /admin/doku — status kredensial (owner-only, READ-ONLY).
+ * Kredensial DOKU adalah rahasia operator platform: diatur lewat CLI
+ * (`wrangler secret put`), tidak pernah dari dalam aplikasi.
+ */
+export const dokuStatus = async ({ env, claims }: Ctx): Promise<Response> => {
   if (claims.role !== 'owner') return err('Hanya owner.', 403);
-  const body = await request.json().catch(() => null) as { clientId?: string; env?: string } | null;
-  if (!body?.clientId) return err('clientId wajib.');
-  await env.DB.prepare(
-    `INSERT INTO app_config (key, value, updated_at) VALUES ('doku', ?1, datetime('now'))
-     ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = datetime('now')`
-  ).bind(JSON.stringify({ clientId: body.clientId.slice(0, 64), env: body.env === 'production' ? 'production' : 'sandbox' })).run();
-  await audit(env, claims.email, 'update-doku-creds', `clientId=${body.clientId ? 'diset' : 'kosong'}`);
-  return json({ ok: true });
+  const creds = await getDokuCreds(env);
+  const envMode: DokuEnv = (env.DOKU_ENV === 'production' ? 'production' : 'sandbox');
+  return json({
+    configured: !!creds,
+    env: envMode,
+    clientIdMasked: creds ? `${creds.clientId.slice(0, 4)}••••${creds.clientId.slice(-2)}` : null,
+  });
 };

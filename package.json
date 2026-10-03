@@ -5,16 +5,19 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
     "audit:sql": "node scripts/audit-sql-binding.mjs",
     "test": "vitest run",
-    "db:local": "wrangler d1 execute presensia-db --local --file=./migrations/0001_init.sql"
+    "db:local": "wrangler d1 execute presensia-db --local --file=./migrations/0001_init.sql",
+    "check:domain": "tsc -p tsconfig.domain.json"
   },
   "dependencies": {
-    "hono": "^4.6.0"
+    "hono": "^4.6.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260918.1",
+    "@types/node": "24.12.3",
     "typescript": "^5.5.0",
     "vitest": "^4.1.10",
     "wrangler": "^4.134.0"

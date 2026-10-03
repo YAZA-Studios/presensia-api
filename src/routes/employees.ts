@@ -17,20 +17,27 @@ const requireAdmin = (claims: SessionClaims): Response | null =>
 /** GET /employees — daftar karyawan SESUAI SCOPE RBAC:
  *  owner/admin = seluruh org, manager = bawahan langsung + diri. */
 export const list = async ({ env, claims }: Ctx): Promise<Response> => {
-  const base = `SELECT u.email, u.name, u.role, u.phone, u.created_at, u.reports_to,
+  // Shift aktif karyawan hidup di tabel employee_shifts (bukan kolom users) —
+  // ambil penugasan effective_from TERBARU per karyawan.
+  const base = `SELECT u.email, u.name, u.role, u.phone, u.created_at, u.reports_to, u.base_salary, u.ptkp, u.contract_end_date, u.hire_date, u.npwp,
+       s.name AS shift_name,
        (SELECT COUNT(*) FROM attendance a WHERE a.email = u.email AND a.status IN ('present','late')) AS total_hadir
-     FROM users u WHERE u.org_id = ?1`;
+     FROM users u
+     LEFT JOIN employee_shifts es ON es.email = u.email AND es.effective_from = (
+       SELECT MAX(effective_from) FROM employee_shifts WHERE email = u.email)
+     LEFT JOIN shifts s ON s.id = es.shift_id
+     WHERE u.org_id = ?1`;
   const rows = isAdminish(claims)
     ? await env.DB.prepare(`${base} ORDER BY u.created_at`).bind(claims.orgId)
-        .all<{ email: string; name: string; role: string; phone: string | null; created_at: string; reports_to: string | null; total_hadir: number }>()
+        .all<{ email: string; name: string; role: string; phone: string | null; created_at: string; reports_to: string | null; shift_name: string | null; total_hadir: number; base_salary: number; ptkp: string | null; contract_end_date: string | null; hire_date: string | null; npwp: string | null }>()
     : claims.role === 'manager'
       ? await env.DB.prepare(`${base} AND (u.reports_to = ?2 OR u.email = ?2) ORDER BY u.created_at`).bind(claims.orgId, claims.email)
-          .all<{ email: string; name: string; role: string; phone: string | null; created_at: string; reports_to: string | null; total_hadir: number }>()
+          .all<{ email: string; name: string; role: string; phone: string | null; created_at: string; reports_to: string | null; shift_name: string | null; total_hadir: number; base_salary: number; ptkp: string | null; contract_end_date: string | null; hire_date: string | null; npwp: string | null }>()
       : await env.DB.prepare(`${base} AND u.email = ?2 ORDER BY u.created_at`).bind(claims.orgId, claims.email)
-          .all<{ email: string; name: string; role: string; phone: string | null; created_at: string; reports_to: string | null; total_hadir: number }>();
+          .all<{ email: string; name: string; role: string; phone: string | null; created_at: string; reports_to: string | null; shift_name: string | null; total_hadir: number; base_salary: number; ptkp: string | null; contract_end_date: string | null; hire_date: string | null; npwp: string | null }>();
   // Catatan: cabang admin hanya memakai ?1 (tanpa ?2) — sah di SQLite;
   // ?2 eksis hanya di cabang manager/employee.
-  return json({ employees: rows.results.map((r) => ({ email: r.email, name: r.name, role: r.role, phone: r.phone, createdAt: r.created_at, reportsTo: r.reports_to, totalHadir: r.total_hadir })) });
+  return json({ employees: rows.results.map((r) => ({ email: r.email, name: r.name, role: r.role, phone: r.phone, createdAt: r.created_at, reportsTo: r.reports_to, shiftName: r.shift_name, totalHadir: r.total_hadir, baseSalary: r.base_salary ?? 0, ptkp: r.ptkp ?? 'TK/0', contractEndDate: r.contract_end_date ?? null, hireDate: r.hire_date || null, npwp: r.npwp || null })) });
 };
 
 /** POST /employees — tambah karyawan (admin isi sandi awal). */
@@ -38,7 +45,7 @@ export const create = async (request: Request, { env, claims }: Ctx): Promise<Re
   const guard = requireAdmin(claims);
   if (guard) return guard;
   const body = await request.json().catch(() => null) as {
-    email?: string; name?: string; phone?: string; password?: string; role?: 'admin' | 'manager' | 'employee'; reportsTo?: string;
+    email?: string; name?: string; phone?: string; password?: string; role?: 'admin' | 'manager' | 'employee'; reportsTo?: string; baseSalary?: number; contractEndDate?: string; hireDate?: string; npwp?: string;
   } | null;
   const email = body?.email?.trim().toLowerCase() || '';
   if (!email || !email.includes('@') || !body?.name) return err('Nama & email wajib diisi.');
@@ -55,10 +62,21 @@ export const create = async (request: Request, { env, claims }: Ctx): Promise<Re
       .bind(reportsTo, claims.orgId).first();
     if (!sup) return err('Atasan langsung tidak ditemukan di org ini.', 400);
   }
+  const baseSalary = Math.round(body.baseSalary ?? 0);
+  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+  const contractEnd = body.contractEndDate && dateRe.test(body.contractEndDate) ? body.contractEndDate : null;
+  const hireDate = body.hireDate && dateRe.test(body.hireDate) ? body.hireDate : null;
+  // NPWP dinormalisasi jadi digit saja (15 digit lama / 16 digit Coretax).
+  const npwpDigits = body.npwp ? body.npwp.replace(/[^0-9]/g, '') : '';
+  if (npwpDigits && npwpDigits.length !== 15 && npwpDigits.length !== 16) {
+    return err('NPWP harus 15 atau 16 digit angka (boleh dengan titik/dash).');
+  }
   await env.DB.prepare(
-    'INSERT INTO users (email, org_id, name, role, password_hash, phone, reports_to, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)'
+    'INSERT INTO users (email, org_id, name, role, password_hash, email_verified, phone, reports_to, base_salary, contract_end_date, hire_date, npwp, created_at) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8, ?9, ?10, ?11, ?12)'
   ).bind(email, claims.orgId, body.name.slice(0, 80), role,
-    await hashPassword(body.password), body.phone?.slice(0, 24) ?? null, reportsTo, nowISO()).run();
+    await hashPassword(body.password), body.phone?.slice(0, 24) ?? null, reportsTo,
+    Number.isFinite(baseSalary) && baseSalary >= 0 ? baseSalary : 0, contractEnd, hireDate,
+    npwpDigits || null, nowISO()).run();
   await audit(env, claims.email, 'create-employee', email);
   return json({ employee: { email, name: body.name, role } }, 201);
 };
@@ -85,6 +103,58 @@ export const assignShift = async (request: Request, { env, claims }: Ctx): Promi
   ).bind(email, body.shiftId, today).run();
   await audit(env, claims.email, 'assign-shift', `${email} → ${body.shiftId}`);
   return json({ ok: true }, 201);
+};
+
+/** POST /employees/salary — set gaji pokok bulanan, status PTKP, tanggal
+ *  akhir kontrak, dan tanggal masuk kerja (dasar THR BR-13).
+ *  Body: { email, baseSalary, ptkp?, contractEndDate?, hireDate? }
+ *  (YYYY-MM-DD | '' = hapus; tak dikirim = tak diubah).
+ *  Owner/admin saja; perubahan diaudit. */
+export const setSalary = async (request: Request, { env, claims }: Ctx): Promise<Response> => {
+  const guard = requireAdmin(claims);
+  if (guard) return guard;
+  const body = await request.json().catch(() => null) as {
+    email?: string; baseSalary?: number; ptkp?: string; contractEndDate?: string; hireDate?: string; npwp?: string;
+  } | null;
+  const email = body?.email?.trim().toLowerCase() || '';
+  if (!email) return err('Email wajib diisi.');
+  const salary = Math.round(body?.baseSalary ?? -1);
+  if (!Number.isFinite(salary) || salary < 0 || salary > 10_000_000_000) return err('Gaji pokok tidak valid (0–10 miliar).');
+  const PTKP = ['TK/0', 'TK/1', 'TK/2', 'TK/3', 'K/0', 'K/1', 'K/2', 'K/3'];
+  const ptkp = body?.ptkp && PTKP.includes(body.ptkp) ? body.ptkp : null;
+  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+  let contractEnd: string | null = null; // null = tidak diubah; '' = dihapus
+  if (body?.contractEndDate !== undefined) {
+    if (body.contractEndDate === '') contractEnd = '';
+    else if (dateRe.test(body.contractEndDate)) contractEnd = body.contractEndDate;
+    else return err('Format contractEndDate YYYY-MM-DD.');
+  }
+  let hireDate: string | null = null; // null = tidak diubah; '' = dihapus
+  if (body?.hireDate !== undefined) {
+    if (body.hireDate === '') hireDate = '';
+    else if (dateRe.test(body.hireDate)) hireDate = body.hireDate;
+    else return err('Format hireDate YYYY-MM-DD.');
+  }
+  let npwp: string | null = null; // null = tidak diubah; '' = dihapus
+  if (body?.npwp !== undefined) {
+    if (body.npwp === '') npwp = '';
+    else {
+      const digits = body.npwp.replace(/[^0-9]/g, '');
+      if (digits.length !== 15 && digits.length !== 16) return err('NPWP harus 15 atau 16 digit angka (boleh dengan titik/dash).');
+      npwp = digits;
+    }
+  }
+  const user = await env.DB.prepare('SELECT email FROM users WHERE email = ?1 AND org_id = ?2')
+    .bind(email, claims.orgId).first();
+  if (!user) return err('Karyawan tidak ditemukan.', 404);
+  await env.DB.prepare(
+    `UPDATE users SET base_salary = ?1, ptkp = COALESCE(?2, ptkp),
+       contract_end_date = COALESCE(?3, contract_end_date), hire_date = COALESCE(?4, hire_date),
+       npwp = COALESCE(?5, npwp) WHERE email = ?6 AND org_id = ?7`
+  ).bind(salary, ptkp, contractEnd, hireDate, npwp, email, claims.orgId).run();
+  await audit(env, claims.email, 'set-salary',
+    `${email} → ${salary}${ptkp ? ` PTKP ${ptkp}` : ''}${contractEnd !== null ? ` kontrak→${contractEnd || 'dihapus'}` : ''}${hireDate !== null ? ` masuk→${hireDate || 'dihapus'}` : ''}${npwp !== null ? ` npwp→${npwp || 'dihapus'}` : ''}`);
+  return json({ ok: true });
 };
 
 /** DELETE /employees/:email — hapus karyawan (bukan owner). */

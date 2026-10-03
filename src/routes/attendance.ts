@@ -20,9 +20,9 @@ import type { SessionClaims } from '../sessions';
 interface Ctx { env: Env; claims: SessionClaims }
 
 /** Org dari sesi + zona waktunya. */
-const orgOf = async (env: Env, orgId: string): Promise<{ id: string; timezone: string; plan: string; plan_expires_at: string | null } | null> =>
-  env.DB.prepare('SELECT id, timezone, plan, plan_expires_at FROM orgs WHERE id = ?1').bind(orgId)
-    .first<{ id: string; timezone: string; plan: string; plan_expires_at: string | null }>();
+const orgOf = async (env: Env, orgId: string): Promise<{ id: string; timezone: string; plan: string; plan_expires_at: string | null; suspended: number } | null> =>
+  env.DB.prepare('SELECT id, timezone, plan, plan_expires_at, suspended FROM orgs WHERE id = ?1').bind(orgId)
+    .first<{ id: string; timezone: string; plan: string; plan_expires_at: string | null; suspended: number }>();
 
 /** ── Sites (lokasi absen) ─────────────────────────────────── */
 
@@ -98,6 +98,8 @@ export const clock = async (request: Request, ctx: Ctx): Promise<Response> => {
 
   const org = await orgOf(env, claims.orgId);
   if (!org) return err('Organisasi tidak ditemukan.', 404);
+  // Organisasi ditangguhkan operator platform → absensi diblokir (403).
+  if (org.suspended) return err('Organisasi ditangguhkan — hubungi penyedia layanan.', 403);
   // Paket kedaluwarsa → blok clock (trial 14 hari / plan_expires_at lewat).
   if (org.plan_expires_at && new Date(org.plan_expires_at).getTime() < Date.now() && org.plan === 'trial') {
     return err('Masa uji coba berakhir — aktifkan paket untuk melanjutkan absensi.', 402);

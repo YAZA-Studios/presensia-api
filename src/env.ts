@@ -10,11 +10,31 @@ export interface Env {
   PUBLIC_API_URL: string;
   PUBLIC_APP_URL: string;
 
-  /** Secret DOKU (override); clientId & mode dari app_config. */
-  DOKU_SECRET_KEY?: string;
+  /**
+   * Kredensial DOKU — RAHASIA OPERATOR, diatur via CLI (bukan dari aplikasi):
+   *   npx wrangler secret put DOKU_CLIENT_ID
+   *   npx wrangler secret put DOKU_SECRET_KEY
+   *   npx wrangler secret put DOKU_ENV        # nilai: sandbox | production
+   * DOKU_CLIENT_SECRET bersifat opsional (password API dashboard DOKU,
+   * hanya untuk endpoint status/status transaksi — bukan alur checkout).
+   */
+  DOKU_CLIENT_ID: string;
+  DOKU_SECRET_KEY: string;
+  DOKU_ENV?: string;
+  DOKU_CLIENT_SECRET?: string;
   /** Login Google (OAuth 2.0 + OIDC). */
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
+  /**
+   * Brevo (email transaksional) — RAHASIA OPERATOR, diatur via CLI:
+   *   npx wrangler secret put BREVO_API_KEY
+   *   npx wrangler secret put BREVO_FROM_EMAIL
+   *   npx wrangler secret put BREVO_FROM_NAME      # opsional
+   * Selama key belum dipasang, pengiriman email di-skip dengan aman (no-op).
+   */
+  BREVO_API_KEY?: string;
+  BREVO_FROM_EMAIL?: string;
+  BREVO_FROM_NAME?: string;
   /** Opsional: override secret tanda tangan sesi (rotasi darurat). */
   SESSION_SIGNING_SECRET?: string;
 }

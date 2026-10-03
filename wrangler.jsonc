@@ -34,7 +34,7 @@
 
   /* Secrets (jangan di-commit):
    *   npx wrangler secret put DOKU_SECRET_KEY
-   *   (opsional) SESSION_SIGNING_SECRET — otomatis di-provision ke KV
+   *   Session opaque disimpan sebagai hash di D1; tidak memakai signing secret.
    *
    * Kredensial DOKU (clientId/env) diatur admin dari panel, tersimpan
    * di tabel app_config — sama seperti pola veomoment.

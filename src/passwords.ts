@@ -46,13 +46,19 @@ export const verifyPassword = async (password: string, stored: string): Promise<
   const parts = stored.split('$');
   if (parts.length !== 4 || parts[0] !== 'pbkdf2') return false;
   const iterations = Number(parts[1]);
-  if (!Number.isFinite(iterations) || iterations < 1) return false;
-  const salt = fromB64(parts[2]);
-  const expected = fromB64(parts[3]);
-  const bits = await derive(password, salt, iterations);
-  const actual = new Uint8Array(bits);
-  if (actual.length !== expected.length) return false;
-  let diff = 0;
-  for (let i = 0; i < actual.length; i++) diff |= actual[i] ^ expected[i];
-  return diff === 0;
+  // WebCrypto Workers menolak PBKDF2 > 100.000 iterasi → treat sebagai
+  // mismatch (bukan error server) agar login gagal mulus, bukan 500.
+  if (!Number.isFinite(iterations) || iterations < 1 || iterations > PBKDF2_ITERATIONS) return false;
+  try {
+    const salt = fromB64(parts[2]);
+    const expected = fromB64(parts[3]);
+    const bits = await derive(password, salt, iterations);
+    const actual = new Uint8Array(bits);
+    if (actual.length !== expected.length) return false;
+    let diff = 0;
+    for (let i = 0; i < actual.length; i++) diff |= actual[i] ^ expected[i];
+    return diff === 0;
+  } catch {
+    return false;
+  }
 };

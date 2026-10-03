@@ -11,12 +11,14 @@ import type { Env } from './env';
 
 const enc = new TextEncoder();
 
-export interface DokuCreds { clientId: string; secretKey: string; envMode: 'sandbox' | 'production' }
+export type DokuEnv = 'sandbox' | 'production';
 
-export const DOKU_API = {
+export interface DokuCreds { clientId: string; secretKey: string; envMode: DokuEnv }
+
+export const DOKU_API: Record<DokuEnv, string> = {
   sandbox: 'https://api-sandbox.doku.com/checkout/v1/payment',
   production: 'https://api.doku.com/checkout/v1/payment',
-} as const;
+};
 
 const b64 = (buf: ArrayBuffer): string => {
   const bytes = new Uint8Array(buf);
@@ -59,20 +61,18 @@ export const dokuNotifySignatureValid = async (
   return safeEqual(expected, provided);
 };
 
-/* ── Kredensial: clientId & mode dari app_config, secret dari Worker secret ── */
-
+/* ── Kredensial: diatur dari Konsol Platform (presensia-admin.*) —
+ *    disimpan di KV ('cfg:doku' + 'sec:doku_secret'), server-side saja.
+ *    Bukan dari dashboard tenant, dan tidak ada form kredensial di aplikasi.
+ *    Fallback: env secrets (DOKU_CLIENT_ID/DOKU_SECRET_KEY/DOKU_ENV) bila di-set via CLI. ── */
 export const getDokuCreds = async (env: Env): Promise<DokuCreds | null> => {
-  let clientId = '';
-  let envMode: 'sandbox' | 'production' = 'sandbox';
+  let clientId = (env.DOKU_CLIENT_ID || '').trim();
+  let envMode: DokuEnv = env.DOKU_ENV === 'production' ? 'production' : 'sandbox';
   try {
-    const row = await env.DB.prepare("SELECT value FROM app_config WHERE key = 'doku'").first<{ value: string }>();
-    if (row?.value) {
-      const cfg = JSON.parse(row.value) as { clientId?: string; env?: string };
-      clientId = cfg.clientId || '';
-      envMode = cfg.env === 'production' ? 'production' : 'sandbox';
-    }
-  } catch { /* default */ }
-  const secretKey = env.DOKU_SECRET_KEY || '';
+    const cfg = await env.KV.get('cfg:doku', 'json') as { clientId?: string; env?: string } | null;
+    if (cfg?.clientId) { clientId = cfg.clientId.trim(); envMode = cfg.env === 'production' ? 'production' : 'sandbox'; }
+  } catch { /* env fallback */ }
+  const secretKey = ((await env.KV.get('sec:doku_secret')) || env.DOKU_SECRET_KEY || '').trim();
   if (!clientId || !secretKey) return null;
   return { clientId, secretKey, envMode };
 };
@@ -137,7 +137,7 @@ export const createDokuCheckout = async (
       body: bodyJson,
     });
   } catch {
-    return { ok: false, message: 'Gagal menghubungi DOKU — coba lagi atau gunakan transfer manual.', status: 502 };
+    return { ok: false, message: 'Gagal menghubungi DOKU — coba lagi beberapa saat.', status: 502 };
   }
   const raw = await res.text();
   let parsed: any = null;
