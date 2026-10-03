@@ -12,6 +12,7 @@ import type { Env } from './env';
 import { workDateIn } from './geo';
 import { isPeriodLocked } from './policies';
 import { runOrgAlerts } from './alerts';
+import { yazaUrl, yazaConfigured } from './yazapay';
 
 const ALERT_HOUR = 9; // jam lokal per org alert harian dikirim
 
@@ -45,5 +46,14 @@ export const runScheduled = async (env: Env): Promise<void> => {
        AND NOT EXISTS (SELECT 1 FROM leave_requests l WHERE l.email = u.email AND l.status = 'approved'
                        AND l.date_from <= ?2 AND l.date_to >= ?2)`
     ).bind(org.id, d).run().catch(() => {});
+  }
+
+  // 5) Maintenance gateway terpusat yaza-payments: reconcile status VA
+  //    pending + retry callback yang gagal (cron tenant, tanpa trigger baru).
+  if (yazaConfigured(env)) {
+    await fetch(`${yazaUrl(env)}/internal/maintenance`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.YAZA_PAYMENTS_API_KEY}` },
+    }).catch(() => {});
   }
 };

@@ -1,11 +1,13 @@
 // ─────────────────────────────────────────────────────────────
-// Presensia — tagihan & langganan (DOKU Checkout).
-// Pola: invoice → checkout DOKU → notify (signature) → aktif.
-// Kredensial DOKU diatur operator via `wrangler secret put` — bukan dari UI.
+// Presensia — tagihan & langganan via GATEWAY TERPUSAT yaza-payments.
+// Pola: invoice → VA (yaza-payments → DOKU) → callback HMAC → aktif.
+// Presensia tidak berbicara langsung ke DOKU; tenant 'presensia'
+// terdaftar di tabel tenants gateway (insert sekali oleh operator).
 // ─────────────────────────────────────────────────────────────
 import type { Env } from '../env';
 import { json, err, nowISO } from '../http';
-import { createDokuCheckout, getDokuCreds, dokuNotifySignatureValid, type DokuEnv } from '../doku';
+import { getDokuCreds, dokuNotifySignatureValid } from '../doku';
+import { yazaCreateVirtualAccount, yazaConfigured, yazaPaymentMethods, yazaCallbackValid } from '../yazapay';
 import { audit } from '../audit';
 import type { SessionClaims } from '../sessions';
 
@@ -33,18 +35,20 @@ export const getPlans = async (env: Env): Promise<Plan[]> => {
 /** GET /plans — katalog publik untuk landing. */
 export const publicPlans = async ({ env }: Ctx): Promise<Response> => json({ plans: await getPlans(env) });
 
-/** GET /billing — invoice org milik sesi. */
+/** GET /billing — invoice org milik sesi (termasuk info VA). */
 export const myInvoices = async ({ env, claims }: Ctx): Promise<Response> => {
   const rows = await env.DB.prepare(
-    'SELECT id, plan, employee_quota, months, amount, status, method, created_at, paid_at FROM invoices WHERE org_id = ?1 ORDER BY created_at DESC LIMIT 100'
+    'SELECT id, plan, employee_quota, months, amount, status, method, created_at, paid_at, va_number, bank_label, how_to_pay_url FROM invoices WHERE org_id = ?1 ORDER BY created_at DESC LIMIT 100'
   ).bind(claims.orgId).all<Record<string, unknown>>();
   return json({ invoices: rows.results.map((r) => ({
     id: r.id, plan: r.plan, employeeQuota: r.employee_quota, months: r.months, amount: r.amount,
     status: r.status, method: r.method, createdAt: r.created_at, paidAt: r.paid_at,
+    vaNumber: r.va_number, bankLabel: r.bank_label, howToPayUrl: r.how_to_pay_url,
   })) });
 };
 
-/** POST /billing/invoices — buat invoice paket + langsung checkout DOKU. */
+/** POST /billing/invoices — buat invoice paket + langsung buat Virtual Account
+ *  lewat gateway terpusat yaza-payments (idempoten: klik ganda → VA sama). */
 export const createInvoice = async (request: Request, { env, claims }: Ctx): Promise<Response> => {
   if (claims.role === 'employee') return err('Hanya admin/owner.', 403);
   const body = await request.json().catch(() => null) as { planId?: string; method?: string } | null;
@@ -60,9 +64,29 @@ export const createInvoice = async (request: Request, { env, claims }: Ctx): Pro
   await audit(env, claims.email, 'create-invoice', `${id} ${plan.id} ${plan.price}`);
 
   const user = await env.DB.prepare('SELECT name FROM users WHERE email = ?1').bind(claims.email).first<{ name: string }>();
-  const checkout = await createDokuCheckout(env, { id, amount: plan.price }, { customerEmail: claims.email, customerName: user?.name || 'Pelanggan Presensia' });
-  if (!checkout.ok) return json({ invoice: { id, amount: plan.price, status: 'unpaid' }, dokuError: checkout.message }, 502);
-  return json({ invoice: { id, amount: plan.price, status: 'unpaid' }, paymentUrl: checkout.url }, 201);
+  // VA berlaku 3 hari (sama dengan kebijakan checkout lama).
+  const pay = await yazaCreateVirtualAccount(env, {
+    externalId: id,
+    amount: plan.price,
+    expiresAt: new Date(Date.now() + 3 * 86_400_000).toISOString(),
+    customer: { name: user?.name || 'Pelanggan Presensia', email: claims.email },
+  });
+  if (!pay.ok) return json({ invoice: { id, amount: plan.price, status: 'unpaid' }, dokuError: pay.message }, pay.status === 503 ? 503 : 502);
+
+  await env.DB.prepare(
+    'UPDATE invoices SET payment_ref = ?1, va_number = ?2, bank_label = ?3, how_to_pay_url = ?4 WHERE id = ?5'
+  ).bind(pay.payment.transactionId, pay.payment.virtualAccountNo, pay.payment.bankLabel, pay.payment.howToPayPage || null, id).run();
+
+  return json({
+    invoice: { id, amount: plan.price, status: 'unpaid' },
+    payment: {
+      virtualAccountNo: pay.payment.virtualAccountNo,
+      bankLabel: pay.payment.bankLabel,
+      expiredAt: pay.payment.expiredAt,
+      howToPayPage: pay.payment.howToPayPage,
+    },
+    paymentUrl: pay.payment.howToPayPage,
+  }, 201);
 };
 
 /** Aktivasi invoice lunas — idempoten: perpanjang plan_expires_at org. */
@@ -126,26 +150,62 @@ export const dokuNotify = async (request: Request, env: Env): Promise<Response> 
   return json({ ok: true, ignored: status || 'unknown' }, 200);
 };
 
-/** GET /billing/invoices/:id — polling status (milik org sendiri). */
+/** GET /billing/invoices/:id — polling status (milik org sendiri, termasuk VA). */
 export const invoiceStatus = async (invoiceId: string, { env, claims }: Ctx): Promise<Response> => {
-  const inv = await env.DB.prepare('SELECT id, plan, amount, status, method, paid_at FROM invoices WHERE id = ?1 AND org_id = ?2')
-    .bind(invoiceId, claims.orgId).first<Record<string, unknown>>();
+  const inv = await env.DB.prepare(
+    'SELECT id, plan, amount, status, method, paid_at, va_number, bank_label, how_to_pay_url FROM invoices WHERE id = ?1 AND org_id = ?2'
+  ).bind(invoiceId, claims.orgId).first<Record<string, unknown>>();
   if (!inv) return err('Invoice tidak ditemukan.', 404);
-  return json({ invoice: { id: inv.id, plan: inv.plan, amount: inv.amount, status: inv.status, method: inv.method, paidAt: inv.paid_at } });
+  return json({ invoice: { id: inv.id, plan: inv.plan, amount: inv.amount, status: inv.status, method: inv.method, paidAt: inv.paid_at, vaNumber: inv.va_number, bankLabel: inv.bank_label, howToPayUrl: inv.how_to_pay_url } });
+};
+
+/** POST /payments/yaza/callback — callback server-to-server dari yaza-payments
+ *  saat VA dibayar (payload payment.paid, HMAC-SHA-512 terverifikasi). */
+export const yazaNotify = async (request: Request, env: Env): Promise<Response> => {
+  const raw = await request.text();
+  const time = request.headers.get('X-Yaza-Timestamp') || '';
+  const signature = request.headers.get('X-Yaza-Signature') || '';
+  if (!(await yazaCallbackValid(env, time, signature, raw))) return err('Signature tidak valid', 401);
+
+  let body: { type?: string; externalId?: string; transactionId?: string; amount?: number; paidAt?: string };
+  try { body = JSON.parse(raw); } catch { return err('Body bukan JSON', 400); }
+  if (body.type !== 'payment.paid') return json({ ok: true, ignored: body.type || 'unknown' });
+
+  const externalId = body.externalId || '';
+  if (!externalId) return err('externalId tidak ada', 400);
+  const invoice = await env.DB.prepare('SELECT id, amount, status, org_id FROM invoices WHERE id = ?1')
+    .bind(externalId).first<{ id: string; amount: number; status: string; org_id: string }>();
+  // Invoice tak dikenal → 200 agar gateway tidak mengulang tanpa akhir.
+  if (!invoice) return json({ ok: true, ignored: 'invoice-tidak-ditemukan' });
+
+  const amount = Number(body.amount || 0);
+  if (amount && amount !== invoice.amount) {
+    await audit(env, 'yaza-gateway', 'notify-mismatch', `${invoice.id} ${amount}!=${invoice.amount}`);
+    return json({ ok: true, ignored: 'nominal-tidak-cocok' });
+  }
+
+  if (invoice.status !== 'paid') {
+    await activatePaidInvoice(env, invoice.id);
+    await audit(env, 'yaza-gateway', 'yaza-paid', `${invoice.id} org=${invoice.org_id} ${amount}`);
+  }
+  return json({ ok: true });
 };
 
 /**
- * GET /admin/doku — status kredensial (owner-only, READ-ONLY).
- * Kredensial DOKU adalah rahasia operator platform: diatur lewat CLI
- * (`wrangler secret put`), tidak pernah dari dalam aplikasi.
+ * GET /admin/doku — status gateway pembayaran terpusat (owner-only, READ-ONLY).
+ * Semua pembayaran Yaza Studios lewat yaza-payments; kredensial DOKU tinggal
+ * di gateway. Yang dibutuhkan tenant ini: API key layanan + tenant terdaftar.
  */
 export const dokuStatus = async ({ env, claims }: Ctx): Promise<Response> => {
   if (claims.role !== 'owner') return err('Hanya owner.', 403);
-  const creds = await getDokuCreds(env);
-  const envMode: DokuEnv = (env.DOKU_ENV === 'production' ? 'production' : 'sandbox');
+  const configured = yazaConfigured(env);
+  const channels = configured ? await yazaPaymentMethods(env) : [];
   return json({
-    configured: !!creds,
-    env: envMode,
-    clientIdMasked: creds ? `${creds.clientId.slice(0, 4)}••••${creds.clientId.slice(-2)}` : null,
+    configured: configured && channels.length > 0,
+    provider: 'yaza-payments',
+    env: 'production',
+    clientIdMasked: channels.length
+      ? `${channels[0]!.label}${channels.length > 1 ? ` +${channels.length - 1} lain` : ''}`
+      : null,
   });
 };

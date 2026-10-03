@@ -53,10 +53,21 @@ const handle = async (request: Request, env: Env): Promise<Response> => {
   // ── Health (publik, untuk uptime monitor) ──
   if (path === '/health') return json({ ok: true, service: 'presensia-api', time: new Date().toISOString() });
 
-  // ── Webhook DOKU (publik, signature-diverifikasi) ──
+  // ── Webhook pembayaran (publik, signature-diverifikasi) ──
   if (path === '/payments/doku/notify' && method === 'POST') {
     if (!(await rateLimit(env, `doku:${clientIp(request)}`, 60))) return jsonError('Terlalu sering.', 429);
     return bill.dokuNotify(request, env);
+  }
+  // Callback dari gateway terpusat yaza-payments (VA dibayar → aktivasi invoice).
+  if (path === '/payments/yaza/callback' && method === 'POST') {
+    if (!(await rateLimit(env, `yaza:${clientIp(request)}`, 60))) return jsonError('Terlalu sering.', 429);
+    return bill.yazaNotify(request, env);
+  }
+
+  // Verifikasi bukti potong 1721-A1 (publik, dibuka dari QR di PDF).
+  if (path === '/payroll/recap/annual/verify' && method === 'GET') {
+    if (!(await rateLimit(env, `verify:${clientIp(request)}`, 30))) return jsonError('Terlalu sering.', 429);
+    return pay.verifyAnnual1721(request, env);
   }
 
   // ── Auth publik ──
@@ -267,6 +278,7 @@ const handle = async (request: Request, env: Env): Promise<Response> => {
   if (path === '/payroll/payslips/export' && method === 'GET') return pay.exportPayslips(request, ctx);
   if (path === '/payroll/recap/export' && method === 'GET') return pay.exportRecap(request, ctx);
   if (path === '/payroll/recap/annual' && method === 'GET') return pay.exportRecapAnnual(request, ctx);
+  if (path === '/payroll/recap/annual/employees' && method === 'GET') return pay.annualEmployees(request, ctx);
   if (path === '/payroll/recap/annual/pdf' && method === 'GET') return pay.exportRecapAnnualPdf(request, ctx);
   if (path === '/payroll/recap/bpjs-check' && method === 'GET') return pay.bpjsCheck(request, ctx);
 

@@ -37,4 +37,17 @@ export interface Env {
   BREVO_FROM_NAME?: string;
   /** Opsional: override secret tanda tangan sesi (rotasi darurat). */
   SESSION_SIGNING_SECRET?: string;
+  /**
+   * Gateway pembayaran terpusat yaza-payments (semua produk Yaza Studios).
+   * RAHASIA OPERATOR, diatur via CLI:
+   *   npx wrangler secret put YAZA_PAYMENTS_API_KEY        # SERVICE_API_KEY gateway
+   *   npx wrangler secret put YAZA_WEBHOOK_SIGNING_SECRET  # verifikasi callback HMAC
+   * Opsional: YAZA_PAYMENTS_URL (default https://payments.yazastudios.id),
+   * YAZA_DEFAULT_BANK (id bank_channels; default = channel aktif pertama).
+   * Tenant 'presensia' terdaftar di tabel tenants gateway.
+   */
+  YAZA_PAYMENTS_URL?: string;
+  YAZA_PAYMENTS_API_KEY?: string;
+  YAZA_WEBHOOK_SIGNING_SECRET?: string;
+  YAZA_DEFAULT_BANK?: string;
 }
